@@ -194,30 +194,51 @@ async function buildReply(text, name = 'friend', session = {}) {
         body: `Nice. Any health goals I should know about?`
       },
       nextStage: 'askHealthGoals',
-      sessionData: { lastMeal: session.lastMeal, mood: text.trim() }
+      sessionData: { lastMeal: session.lastMeal, userMood: text.trim() }
     };
   }
 
   // Stage: Ask health goals
   if (session.stage === 'askHealthGoals') {
-    // Determine mood based on user's answers
-    const userMood = session.mood || 'light';
-    const recommendations = await buildMoodReply(userMood, shortName, session.lastMeal || 'something');
+    // Map user's mood preference to a category
+    const userMoodText = session.userMood || 'light';
+    const moodMapping = {
+      'light': 'light',
+      'heavy': 'heavy',
+      'healthy': 'healthy',
+      'spicy': 'spicy',
+      'affordable': 'affordable',
+      'soup': 'healthy',
+      'salad': 'healthy',
+      'grilled': 'healthy',
+      'protein': 'healthy'
+    };
+    
+    // Find the best matching category
+    let selectedMood = 'light';
+    for (const [key, value] of Object.entries(moodMapping)) {
+      if (userMoodText.toLowerCase().includes(key)) {
+        selectedMood = value;
+        break;
+      }
+    }
+    
+    const recommendations = await buildMoodReply(selectedMood, shortName, session.lastMeal || 'something');
     
     // Get vendor recommendations using Grok
-    const vendorPrompt = `I'm a food delivery assistant for Nigerian food. The user likes ${userMood} and healthy food, last ate ${session.lastMeal}. Suggest 3-4 popular Nigerian food vendors or restaurants that sell ${userMood} and healthy options. Keep it concise for WhatsApp.`;
+    const vendorPrompt = `You are a Nigerian food delivery expert. Recommend 3-4 specific restaurants or food vendors in Nigeria that serve ${selectedMood} Nigerian foods. Format as:\n🏪 Restaurant Name - Brief description\nKeep it concise for WhatsApp. Focus on real or likely vendor names.`;
     const vendors = await askGrok(vendorPrompt, {});
     
     return {
       replies: [
         {
           type: 'text',
-          body: `Based on what you told me — here are my top picks for you:`
+          body: `✨ Based on what you told me — here are my top picks for you:\n\n*${selectedMood.charAt(0).toUpperCase() + selectedMood.slice(1)} Nigerian Foods:*`
         },
-        ...Array.isArray(recommendations) ? recommendations : [recommendations],
+        ...(Array.isArray(recommendations) ? recommendations : [recommendations]),
         {
           type: 'text',
-          body: vendors || `🏪 Here are some places that sell these meals:\n• Jollof house - Nigerian comfort food\n• Healthy Eats NG - Health-focused meals\n• Local food vendor near you`
+          body: `\n🏪 *Places to find these meals:*\n${vendors || '• Jollof House\n• Healthy Eats NG\n• Local food vendors'}\n\nEnjoy your meal! 😋`
         }
       ],
       nextStage: null
