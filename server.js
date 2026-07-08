@@ -280,20 +280,6 @@ function getMoodCategory(normalized) {
 async function buildMoodReply(category, shortName, lastMeal) {
   const basePrefix = lastMeal ? `Based on what you last ate (${lastMeal}), ` : '';
 
-  if (category === 'surprise') {
-    return [
-      {
-        type: 'text',
-        body: `${basePrefix}${shortName}, here is a surprise pick: jollof rice with fried plantain and peppered fish.`
-      },
-      {
-        type: 'image',
-        imageUrl: getLocalImageUrl('surprise1.png'),
-        caption: `${basePrefix}Surprise option: jollof rice with fried plantain and peppered fish.`
-      }
-    ];
-  }
-
   if (category === 'light') {
     return [
       {
@@ -302,28 +288,28 @@ async function buildMoodReply(category, shortName, lastMeal) {
       },
       {
         type: 'image',
-        imageUrl: getLocalImageUrl('light1.png'),
-        caption: `${basePrefix}Light option 1 for ${shortName}: Nigerian moi moi with a side of pap.`
+        imageUrl: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=500',
+        caption: `${basePrefix}Light option 1: Nigerian moi moi with a side of pap - Steamed bean pudding.`
       },
       {
         type: 'image',
-        imageUrl: getLocalImageUrl('light2.png'),
-        caption: `${basePrefix}Light option 2 for ${shortName}: akara and fresh fried plantain.`
+        imageUrl: 'https://images.unsplash.com/photo-1585238341710-4913d3ca7cc0?w=500',
+        caption: `${basePrefix}Light option 2: Akara and fresh fried plantain - Crispy bean fritters.`
       },
       {
         type: 'image',
-        imageUrl: getLocalImageUrl('light3.png'),
-        caption: `${basePrefix}Light option 3 for ${shortName}: salad bowl with grilled fish and light Nigerian flavors.`
+        imageUrl: 'https://images.unsplash.com/photo-1540189549336-e6e99c3679fe?w=500',
+        caption: `${basePrefix}Light option 3: Salad bowl with grilled fish and light Nigerian flavors.`
       },
       {
         type: 'image',
-        imageUrl: getLocalImageUrl('light4.png'),
-        caption: `${basePrefix}Light option 4 for ${shortName}: steamed vegetables with a small portion of lean protein.`
+        imageUrl: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=500',
+        caption: `${basePrefix}Light option 4: Steamed vegetables with lean protein - Healthy & nutritious.`
       },
       {
         type: 'image',
-        imageUrl: getLocalImageUrl('light5.png'),
-        caption: `${basePrefix}Light option 5 for ${shortName}: fruit and nut bowl with ginger syrup.`
+        imageUrl: 'https://images.unsplash.com/photo-1599599810694-b5ac1ea27830?w=500',
+        caption: `${basePrefix}Light option 5: Fruit and nut bowl with ginger syrup - Refreshing & light.`
       }
     ];
   }
@@ -335,24 +321,29 @@ async function buildMoodReply(category, shortName, lastMeal) {
         body: `${basePrefix}Here are some hearty options for you 👇`
       },
       {
-        type: 'text',
-        body: `1. Pounded yam with egusi soup — rich, comforting, and filling.`
+        type: 'image',
+        imageUrl: 'https://images.unsplash.com/photo-1645112411341-6c4ee36b2e5d?w=500',
+        caption: `🍲 Pounded yam with egusi soup — rich, comforting, and filling.`
       },
       {
-        type: 'text',
-        body: `2. Oha soup with fufu — a wholesome heavy meal with deep flavor.`
+        type: 'image',
+        imageUrl: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=500',
+        caption: `🍲 Oha soup with fufu — a wholesome heavy meal with deep flavor.`
       },
       {
-        type: 'text',
-        body: `3. Ogbono with eba — thick, oily, and very satisfying.`
+        type: 'image',
+        imageUrl: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=500',
+        caption: `🍲 Ogbono with eba — thick, oily, and very satisfying.`
       },
       {
-        type: 'text',
-        body: `4. Fried rice with chicken stew — loaded and delicious.`
+        type: 'image',
+        imageUrl: 'https://images.unsplash.com/photo-1551632786-de41ec16a01d?w=500',
+        caption: `🍚 Fried rice with chicken stew — loaded and delicious.`
       },
       {
-        type: 'text',
-        body: `5. Suya platter with spicy beef — bold, hearty, and perfect for a big appetite.`
+        type: 'image',
+        imageUrl: 'https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=500',
+        caption: `🥩 Suya platter with spicy beef — bold, hearty, and perfect.`
       }
     ];
   }
@@ -365,28 +356,28 @@ async function buildMoodReply(category, shortName, lastMeal) {
       },
       {
         type: 'image',
-        imageUrl: getLocalImageUrl('healthy1.png'),
-        caption: `${basePrefix}Healthy option 1 for ${shortName}: grilled fish with steamed greens.`
+        imageUrl: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=500',
+        caption: `🐟 Grilled fish with steamed greens - Protein-rich & healthy.`
       },
       {
         type: 'image',
-        imageUrl: getLocalImageUrl('healthy2.png'),
-        caption: `${basePrefix}Healthy option 2 for ${shortName}: okra soup with fish and a light swallow.`
+        imageUrl: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=500',
+        caption: `🥘 Okra soup with fish and a light swallow - Nutritious Nigerian classic.`
       },
       {
         type: 'image',
-        imageUrl: getLocalImageUrl('healthy3.png'),
-        caption: `${basePrefix}Healthy option 3 for ${shortName}: boiled plantain with lean stew.`
+        imageUrl: 'https://images.unsplash.com/photo-1599599810694-b5ac1ea27830?w=500',
+        caption: `🍌 Boiled plantain with lean stew - Balanced & wholesome.`
       },
       {
         type: 'image',
-        imageUrl: getLocalImageUrl('healthy4.png'),
-        caption: `${basePrefix}Healthy option 4 for ${shortName}: vegetable soup with lean protein.`
+        imageUrl: 'https://images.unsplash.com/photo-1540189549336-e6e99c3679fe?w=500',
+        caption: `🥗 Vegetable soup with lean protein - Fresh & healthy.`
       },
       {
         type: 'image',
-        imageUrl: getLocalImageUrl('healthy5.png'),
-        caption: `${basePrefix}Healthy option 5 for ${shortName}: fruit bowl with nuts and honey.`
+        imageUrl: 'https://images.unsplash.com/photo-1599599810694-b5ac1ea27830?w=500',
+        caption: `🍎 Fruit bowl with nuts and honey - Natural & energizing.`
       }
     ];
   }
@@ -399,28 +390,28 @@ async function buildMoodReply(category, shortName, lastMeal) {
       },
       {
         type: 'image',
-        imageUrl: getLocalImageUrl('spicy1.png'),
-        caption: `${basePrefix}Spicy option 1 for ${shortName}: suya with onions and chili.`
+        imageUrl: 'https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=500',
+        caption: `🌶️ Suya with onions and chili - Spicy & smoky Nigerian delight.`
       },
       {
         type: 'image',
-        imageUrl: getLocalImageUrl('spicy2.png'),
-        caption: `${basePrefix}Spicy option 2 for ${shortName}: hearty pepper soup with meat.`
+        imageUrl: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=500',
+        caption: `🌶️ Hearty pepper soup with meat - Warming & spicy.`
       },
       {
         type: 'image',
-        imageUrl: getLocalImageUrl('spicy3.png'),
-        caption: `${basePrefix}Spicy option 3 for ${shortName}: spicy jollof rice with extra pepper.`
+        imageUrl: 'https://images.unsplash.com/photo-1551632786-de41ec16a01d?w=500',
+        caption: `🌶️ Spicy jollof rice with extra pepper - Bold & flavorful.`
       },
       {
         type: 'image',
-        imageUrl: getLocalImageUrl('spicy4.png'),
-        caption: `${basePrefix}Spicy option 4 for ${shortName}: peppered goat meat with bold spices.`
+        imageUrl: 'https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=500',
+        caption: `🌶️ Peppered goat meat with bold spices - Intense flavor.`
       },
       {
         type: 'image',
-        imageUrl: getLocalImageUrl('spicy5.png'),
-        caption: `${basePrefix}Spicy option 5 for ${shortName}: stew with extra scotch bonnet pepper.`
+        imageUrl: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=500',
+        caption: `🌶️ Stew with extra scotch bonnet pepper - Fiery hot!`
       }
     ];
   }
@@ -433,28 +424,42 @@ async function buildMoodReply(category, shortName, lastMeal) {
       },
       {
         type: 'image',
-        imageUrl: getLocalImageUrl('affordable1.png'),
-        caption: `${basePrefix}Affordable option 1 for ${shortName}: beans and plantain.`
+        imageUrl: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=500',
+        caption: `💰 Beans and plantain - Budget-friendly & filling.`
       },
       {
         type: 'image',
-        imageUrl: getLocalImageUrl('affordable2.png'),
-        caption: `${basePrefix}Affordable option 2 for ${shortName}: fried rice with chicken.`
+        imageUrl: 'https://images.unsplash.com/photo-1551632786-de41ec16a01d?w=500',
+        caption: `💰 Fried rice with chicken - Affordable & satisfying.`
       },
       {
         type: 'image',
-        imageUrl: getLocalImageUrl('affordable3.png'),
-        caption: `${basePrefix}Affordable option 3 for ${shortName}: akara and bread.`
+        imageUrl: 'https://images.unsplash.com/photo-1585238341710-4913d3ca7cc0?w=500',
+        caption: `💰 Akara and bread - Cheap & cheerful morning meal.`
       },
       {
         type: 'image',
-        imageUrl: getLocalImageUrl('affordable4.png'),
-        caption: `${basePrefix}Affordable option 4 for ${shortName}: yam porridge with savory sauce.`
+        imageUrl: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=500',
+        caption: `💰 Yam porridge with savory sauce - Economical & tasty.`
       },
       {
         type: 'image',
-        imageUrl: getLocalImageUrl('affordable5.png'),
-        caption: `${basePrefix}Affordable option 5 for ${shortName}: rice and stew.`
+        imageUrl: 'https://images.unsplash.com/photo-1551632786-de41ec16a01d?w=500',
+        caption: `💰 Rice and stew - Classic affordable combo.`
+      }
+    ];
+  }
+
+  if (category === 'surprise') {
+    return [
+      {
+        type: 'text',
+        body: `${basePrefix}${shortName}, here is a surprise pick: jollof rice with fried plantain and peppered fish.`
+      },
+      {
+        type: 'image',
+        imageUrl: 'https://images.unsplash.com/photo-1551632786-de41ec16a01d?w=500',
+        caption: `🎉 Surprise option: jollof rice with fried plantain and peppered fish.`
       }
     ];
   }
