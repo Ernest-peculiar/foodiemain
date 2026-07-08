@@ -200,14 +200,25 @@ async function buildReply(text, name = 'friend', session = {}) {
 
   // Stage: Ask health goals
   if (session.stage === 'askHealthGoals') {
-    const recommendations = await buildMoodReply('light', shortName, session.lastMeal || 'something');
+    // Determine mood based on user's answers
+    const userMood = session.mood || 'light';
+    const recommendations = await buildMoodReply(userMood, shortName, session.lastMeal || 'something');
+    
+    // Get vendor recommendations using Grok
+    const vendorPrompt = `I'm a food delivery assistant for Nigerian food. The user likes ${userMood} and healthy food, last ate ${session.lastMeal}. Suggest 3-4 popular Nigerian food vendors or restaurants that sell ${userMood} and healthy options. Keep it concise for WhatsApp.`;
+    const vendors = await askGrok(vendorPrompt, {});
+    
     return {
       replies: [
         {
           type: 'text',
           body: `Based on what you told me — here are my top picks for you:`
         },
-        ...Array.isArray(recommendations) ? recommendations : [recommendations]
+        ...Array.isArray(recommendations) ? recommendations : [recommendations],
+        {
+          type: 'text',
+          body: vendors || `🏪 Here are some places that sell these meals:\n• Jollof house - Nigerian comfort food\n• Healthy Eats NG - Health-focused meals\n• Local food vendor near you`
+        }
       ],
       nextStage: null
     };
