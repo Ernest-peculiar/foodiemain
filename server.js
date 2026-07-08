@@ -11,6 +11,7 @@ const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const WHATSAPP_API_VERSION = process.env.WHATSAPP_API_VERSION || 'v22.0';
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 const GOOGLE_CSE_ID = process.env.GOOGLE_CSE_ID;
+const GROK_API_KEY = process.env.GROK_API_KEY;
 const imageCache = new Map();
 
 app.use(express.json());
@@ -85,6 +86,45 @@ app.post('/webhook', async (req, res) => {
 
   res.sendStatus(200);
 });
+
+async function askGrok(userMessage, sessionData = {}) {
+  if (!GROK_API_KEY) {
+    console.warn('Grok API key is not configured.');
+    return null;
+  }
+
+  try {
+    const systemPrompt = `You are Foodie, a friendly Nigerian food recommendation WhatsApp bot. You help users discover what to eat based on their mood and preferences. You're knowledgeable about Nigerian cuisine and friendly. Keep responses concise for WhatsApp (under 160 characters when possible). ${sessionData.mood ? `The user is interested in ${sessionData.mood} food.` : ''}`;
+
+    const response = await fetch('https://api.x.ai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${GROK_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: 'grok-beta',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userMessage }
+        ],
+        temperature: 0.7,
+        max_tokens: 150
+      })
+    });
+
+    if (!response.ok) {
+      console.error('Grok API error:', response.status);
+      return null;
+    }
+
+    const data = await response.json();
+    return data.choices?.[0]?.message?.content || null;
+  } catch (error) {
+    console.error('Grok API failed:', error);
+    return null;
+  }
+}
 
 async function buildReply(text, name = 'friend', session = {}) {
   const normalized = text.trim().toLowerCase();
@@ -183,6 +223,18 @@ async function buildReply(text, name = 'friend', session = {}) {
       },
       nextStage: 'askLastMeal',
       sessionData: { mood }
+    };
+  }
+
+  // Use Grok API for all other conversations
+  const grokResponse = await askGrok(text, session);
+  if (grokResponse) {
+    return {
+      replies: {
+        type: 'text',
+        body: grokResponse
+      },
+      nextStage: null
     };
   }
 
@@ -398,14 +450,23 @@ function getMoodButtonsReply(bodyText = 'Got it! Tap a category button or type a
   return {
     type: 'interactive',
     interactive: {
-      type: 'button',
+      type: 'list',
       body: {
         text: bodyText
       },
       action: {
-        buttons: [
-          { type: 'reply', reply: { id: 'hungry', title: 'I\'m hungry 👀' } },
-          { type: 'reply', reply: { id: 'what can you do', title: 'What can you do?' } }
+        button: 'Choose',
+        sections: [
+          {
+            rows: [
+              { id: 'light', title: 'Light' },
+              { id: 'heavy', title: 'Heavy' },
+              { id: 'healthy', title: 'Healthy' },
+              { id: 'spicy', title: 'Spicy' },
+              { id: 'affordable', title: 'Affordable' },
+              { id: 'surprise', title: 'Surprise' }
+            ]
+          }
         ]
       }
     }
