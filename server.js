@@ -140,19 +140,8 @@ async function buildReply(text, name = 'friend', session = {}) {
   if (['hi', 'hello', 'hey', 'start'].includes(normalized)) {
     return {
       replies: {
-        type: 'interactive',
-        interactive: {
-          type: 'button',
-          body: {
-            text: `Hi ${shortName}! 😂 I'm Foodie — your personal Nigerian food guide. What do you want to eat?`
-          },
-          action: {
-            buttons: [
-              { type: 'reply', reply: { id: 'hungry', title: 'I\'m hungry 👀' } },
-              { type: 'reply', reply: { id: 'what can you do', title: 'What can you do?' } }
-            ]
-          }
-        }
+        type: 'text',
+        body: `Hi ${shortName}! 😂 I'm Foodie — your personal Nigerian food guide. What do you want to eat? Reply with hungry, light, heavy, healthy, spicy, or affordable.`
       },
       nextStage: null
     };
