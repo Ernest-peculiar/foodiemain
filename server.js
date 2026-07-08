@@ -1,8 +1,10 @@
 require('dotenv').config();
 const express = require('express');
+const path = require('path');
 const app = express();
 
 const PORT = process.env.PORT || 3000;
+const PUBLIC_URL = process.env.PUBLIC_URL || `http://localhost:${PORT}`;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
@@ -12,6 +14,7 @@ const GOOGLE_CSE_ID = process.env.GOOGLE_CSE_ID;
 const imageCache = new Map();
 
 app.use(express.json());
+app.use('/images', express.static(path.join(__dirname, 'public/images')));
 
 const sessions = new Map();
 
@@ -175,19 +178,20 @@ async function buildMoodReply(category, shortName, lastMeal) {
   const basePrefix = lastMeal ? `Based on what you last ate (${lastMeal}), ` : '';
 
   if (category === 'surprise') {
-    return {
-      type: 'text',
-      body: `${basePrefix}${shortName}, here is a surprise pick: jollof rice with fried plantain and peppered fish.`
-    };
+    return [
+      {
+        type: 'text',
+        body: `${basePrefix}${shortName}, here is a surprise pick: jollof rice with fried plantain and peppered fish.`
+      },
+      {
+        type: 'image',
+        imageUrl: getLocalImageUrl('surprise1.png'),
+        caption: `${basePrefix}Surprise option: jollof rice with fried plantain and peppered fish.`
+      }
+    ];
   }
 
   if (category === 'light') {
-    const image1 = await searchGoogleImage('Nigerian moi moi with pap');
-    const image2 = await searchGoogleImage('Nigerian akara and plantain');
-    const image3 = await searchGoogleImage('Nigerian salad bowl with grilled fish');
-    const image4 = await searchGoogleImage('steamed vegetables with lean protein');
-    const image5 = await searchGoogleImage('fruit and nut bowl with ginger syrup');
-
     return [
       {
         type: 'text',
@@ -195,27 +199,27 @@ async function buildMoodReply(category, shortName, lastMeal) {
       },
       {
         type: 'image',
-        imageUrl: image1 || 'https://images.pexels.com/photos/461198/pexels-photo-461198.jpeg',
+        imageUrl: getLocalImageUrl('light1.png'),
         caption: `${basePrefix}Light option 1 for ${shortName}: Nigerian moi moi with a side of pap.`
       },
       {
         type: 'image',
-        imageUrl: image2 || 'https://images.pexels.com/photos/1435901/pexels-photo-1435901.jpeg',
+        imageUrl: getLocalImageUrl('light2.png'),
         caption: `${basePrefix}Light option 2 for ${shortName}: akara and fresh fried plantain.`
       },
       {
         type: 'image',
-        imageUrl: image3 || 'https://images.pexels.com/photos/209540/pexels-photo-209540.jpeg',
+        imageUrl: getLocalImageUrl('light3.png'),
         caption: `${basePrefix}Light option 3 for ${shortName}: salad bowl with grilled fish and light Nigerian flavors.`
       },
       {
         type: 'image',
-        imageUrl: image4 || 'https://images.pexels.com/photos/958545/pexels-photo-958545.jpeg',
+        imageUrl: getLocalImageUrl('light4.png'),
         caption: `${basePrefix}Light option 4 for ${shortName}: steamed vegetables with a small portion of lean protein.`
       },
       {
         type: 'image',
-        imageUrl: image5 || 'https://images.pexels.com/photos/247466/pexels-photo-247466.jpeg',
+        imageUrl: getLocalImageUrl('light5.png'),
         caption: `${basePrefix}Light option 5 for ${shortName}: fruit and nut bowl with ginger syrup.`
       }
     ];
@@ -251,12 +255,6 @@ async function buildMoodReply(category, shortName, lastMeal) {
   }
 
   if (category === 'healthy') {
-    const image1 = await searchGoogleImage('grilled fish with steamed greens');
-    const image2 = await searchGoogleImage('okra soup with fish and light swallow');
-    const image3 = await searchGoogleImage('boiled plantain with lean stew');
-    const image4 = await searchGoogleImage('vegetable soup with lean protein');
-    const image5 = await searchGoogleImage('fruit bowl with nuts and honey');
-
     return [
       {
         type: 'text',
@@ -264,39 +262,33 @@ async function buildMoodReply(category, shortName, lastMeal) {
       },
       {
         type: 'image',
-        imageUrl: image1 || 'https://images.pexels.com/photos/209540/pexels-photo-209540.jpeg',
+        imageUrl: getLocalImageUrl('healthy1.png'),
         caption: `${basePrefix}Healthy option 1 for ${shortName}: grilled fish with steamed greens.`
       },
       {
         type: 'image',
-        imageUrl: image2 || 'https://images.pexels.com/photos/1435901/pexels-photo-1435901.jpeg',
+        imageUrl: getLocalImageUrl('healthy2.png'),
         caption: `${basePrefix}Healthy option 2 for ${shortName}: okra soup with fish and a light swallow.`
       },
       {
         type: 'image',
-        imageUrl: image3 || 'https://images.pexels.com/photos/958545/pexels-photo-958545.jpeg',
+        imageUrl: getLocalImageUrl('healthy3.png'),
         caption: `${basePrefix}Healthy option 3 for ${shortName}: boiled plantain with lean stew.`
       },
       {
         type: 'image',
-        imageUrl: image4 || 'https://images.pexels.com/photos/461198/pexels-photo-461198.jpeg',
+        imageUrl: getLocalImageUrl('healthy4.png'),
         caption: `${basePrefix}Healthy option 4 for ${shortName}: vegetable soup with lean protein.`
       },
       {
         type: 'image',
-        imageUrl: image5 || 'https://images.pexels.com/photos/247466/pexels-photo-247466.jpeg',
+        imageUrl: getLocalImageUrl('healthy5.png'),
         caption: `${basePrefix}Healthy option 5 for ${shortName}: fruit bowl with nuts and honey.`
       }
     ];
   }
 
   if (category === 'spicy') {
-    const image1 = await searchGoogleImage('suya with onions and chili');
-    const image2 = await searchGoogleImage('pepper soup with meat');
-    const image3 = await searchGoogleImage('spicy jollof rice');
-    const image4 = await searchGoogleImage('peppered goat meat');
-    const image5 = await searchGoogleImage('pepper stew');
-
     return [
       {
         type: 'text',
@@ -304,39 +296,33 @@ async function buildMoodReply(category, shortName, lastMeal) {
       },
       {
         type: 'image',
-        imageUrl: image1 || 'https://images.pexels.com/photos/247466/pexels-photo-247466.jpeg',
+        imageUrl: getLocalImageUrl('spicy1.png'),
         caption: `${basePrefix}Spicy option 1 for ${shortName}: suya with onions and chili.`
       },
       {
         type: 'image',
-        imageUrl: image2 || 'https://images.pexels.com/photos/209540/pexels-photo-209540.jpeg',
+        imageUrl: getLocalImageUrl('spicy2.png'),
         caption: `${basePrefix}Spicy option 2 for ${shortName}: hearty pepper soup with meat.`
       },
       {
         type: 'image',
-        imageUrl: image3 || 'https://images.pexels.com/photos/461198/pexels-photo-461198.jpeg',
+        imageUrl: getLocalImageUrl('spicy3.png'),
         caption: `${basePrefix}Spicy option 3 for ${shortName}: spicy jollof rice with extra pepper.`
       },
       {
         type: 'image',
-        imageUrl: image4 || 'https://images.pexels.com/photos/958545/pexels-photo-958545.jpeg',
+        imageUrl: getLocalImageUrl('spicy4.png'),
         caption: `${basePrefix}Spicy option 4 for ${shortName}: peppered goat meat with bold spices.`
       },
       {
         type: 'image',
-        imageUrl: image5 || 'https://images.pexels.com/photos/1435901/pexels-photo-1435901.jpeg',
+        imageUrl: getLocalImageUrl('spicy5.png'),
         caption: `${basePrefix}Spicy option 5 for ${shortName}: stew with extra scotch bonnet pepper.`
       }
     ];
   }
 
   if (category === 'affordable') {
-    const image1 = await searchGoogleImage('beans and plantain');
-    const image2 = await searchGoogleImage('fried rice with chicken');
-    const image3 = await searchGoogleImage('akara and bread');
-    const image4 = await searchGoogleImage('yam porridge with savory sauce');
-    const image5 = await searchGoogleImage('rice and stew');
-
     return [
       {
         type: 'text',
@@ -344,27 +330,27 @@ async function buildMoodReply(category, shortName, lastMeal) {
       },
       {
         type: 'image',
-        imageUrl: image1 || 'https://images.pexels.com/photos/958545/pexels-photo-958545.jpeg',
+        imageUrl: getLocalImageUrl('affordable1.png'),
         caption: `${basePrefix}Affordable option 1 for ${shortName}: beans and plantain.`
       },
       {
         type: 'image',
-        imageUrl: image2 || 'https://images.pexels.com/photos/461198/pexels-photo-461198.jpeg',
+        imageUrl: getLocalImageUrl('affordable2.png'),
         caption: `${basePrefix}Affordable option 2 for ${shortName}: fried rice with chicken.`
       },
       {
         type: 'image',
-        imageUrl: image3 || 'https://images.pexels.com/photos/1435901/pexels-photo-1435901.jpeg',
+        imageUrl: getLocalImageUrl('affordable3.png'),
         caption: `${basePrefix}Affordable option 3 for ${shortName}: akara and bread.`
       },
       {
         type: 'image',
-        imageUrl: image4 || 'https://images.pexels.com/photos/209540/pexels-photo-209540.jpeg',
+        imageUrl: getLocalImageUrl('affordable4.png'),
         caption: `${basePrefix}Affordable option 4 for ${shortName}: yam porridge with savory sauce.`
       },
       {
         type: 'image',
-        imageUrl: image5 || 'https://images.pexels.com/photos/247466/pexels-photo-247466.jpeg',
+        imageUrl: getLocalImageUrl('affordable5.png'),
         caption: `${basePrefix}Affordable option 5 for ${shortName}: rice and stew.`
       }
     ];
@@ -393,6 +379,10 @@ function getMoodButtonsReply(bodyText = 'Got it! Tap a category button or type a
       }
     }
   };
+}
+
+function getLocalImageUrl(filename) {
+  return `${PUBLIC_URL}/images/${encodeURIComponent(filename)}`;
 }
 
 async function searchGoogleImage(query) {
