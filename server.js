@@ -93,7 +93,21 @@ async function buildReply(text, name = 'friend', session = {}) {
 
   if (!normalized) {
     return {
-      replies: getMoodButtonsReply(`Hi ${shortName}! I am Foodie. I can help you choose what to eat. 🍽️`),
+      replies: {
+        type: 'interactive',
+        interactive: {
+          type: 'button',
+          body: {
+            text: `Hi ${shortName}! I am Foodie. I can help you choose what to eat. 🍽️`
+          },
+          action: {
+            buttons: [
+              { type: 'reply', reply: { id: 'hungry', title: 'I\'m hungry 👀' } },
+              { type: 'reply', reply: { id: 'what can you do', title: 'What can you do?' } }
+            ]
+          }
+        }
+      },
       nextStage: null
     };
   }
@@ -373,14 +387,23 @@ function getMoodButtonsReply(bodyText = 'Got it! Tap a category button or type a
   return {
     type: 'interactive',
     interactive: {
-      type: 'button',
+      type: 'list',
       body: {
         text: bodyText
       },
       action: {
-        buttons: [
-          { type: 'reply', reply: { id: 'hungry', title: 'I\'m hungry 👀' } },
-          { type: 'reply', reply: { id: 'what can you do', title: 'What can you do?' } }
+        button: 'Choose',
+        sections: [
+          {
+            rows: [
+              { id: 'light', title: 'Light' },
+              { id: 'heavy', title: 'Heavy' },
+              { id: 'healthy', title: 'Healthy' },
+              { id: 'spicy', title: 'Spicy' },
+              { id: 'affordable', title: 'Affordable' },
+              { id: 'surprise', title: 'Surprise' }
+            ]
+          }
         ]
       }
     }
