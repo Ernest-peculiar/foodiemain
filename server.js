@@ -10,6 +10,7 @@ const WHATSAPP_API_VERSION = process.env.WHATSAPP_API_VERSION || 'v22.0';
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 const GOOGLE_CSE_ID = process.env.GOOGLE_CSE_ID;
 const imageCache = new Map();
+const { getMealsByCategory, getRandomMeals, buildMealReplies } = require('./foodService');
 
 app.use(express.json());
 
@@ -175,205 +176,24 @@ async function buildMoodReply(category, shortName, lastMeal) {
   const basePrefix = lastMeal ? `Based on what you last ate (${lastMeal}), ` : '';
 
   if (category === 'surprise') {
+    const surpriseMeals = getMealsByCategory('surprise');
+    const picks = getRandomMeals(surpriseMeals, 1);
+    const text = picks[0]
+      ? `${basePrefix}${shortName}, here is a surprise pick: ${picks[0].name}. ${picks[0].description}`
+      : `${basePrefix}${shortName}, here is a surprise pick: jollof rice with fried plantain.`;
+    return { type: 'text', body: text };
+  }
+
+  const meals = getMealsByCategory(category);
+  if (!meals || meals.length === 0) {
     return {
       type: 'text',
-      body: `${basePrefix}${shortName}, here is a surprise pick: jollof rice with fried plantain and peppered fish.`
+      body: `${basePrefix}I can suggest meals based on your mood, ${shortName}. Try: hungry, light, heavy, healthy, spicy, or affordable.`
     };
   }
 
-  if (category === 'light') {
-    const image1 = await searchGoogleImage('Nigerian moi moi with pap');
-    const image2 = await searchGoogleImage('Nigerian akara and plantain');
-    const image3 = await searchGoogleImage('Nigerian salad bowl with grilled fish');
-    const image4 = await searchGoogleImage('steamed vegetables with lean protein');
-    const image5 = await searchGoogleImage('fruit and nut bowl with ginger syrup');
-
-    return [
-      {
-        type: 'text',
-        body: `${basePrefix}Here are some lighter options for you 👇`
-      },
-      {
-        type: 'image',
-        imageUrl: image1 || 'https://images.pexels.com/photos/461198/pexels-photo-461198.jpeg',
-        caption: `${basePrefix}Light option 1 for ${shortName}: Nigerian moi moi with a side of pap.`
-      },
-      {
-        type: 'image',
-        imageUrl: image2 || 'https://images.pexels.com/photos/1435901/pexels-photo-1435901.jpeg',
-        caption: `${basePrefix}Light option 2 for ${shortName}: akara and fresh fried plantain.`
-      },
-      {
-        type: 'image',
-        imageUrl: image3 || 'https://images.pexels.com/photos/209540/pexels-photo-209540.jpeg',
-        caption: `${basePrefix}Light option 3 for ${shortName}: salad bowl with grilled fish and light Nigerian flavors.`
-      },
-      {
-        type: 'image',
-        imageUrl: image4 || 'https://images.pexels.com/photos/958545/pexels-photo-958545.jpeg',
-        caption: `${basePrefix}Light option 4 for ${shortName}: steamed vegetables with a small portion of lean protein.`
-      },
-      {
-        type: 'image',
-        imageUrl: image5 || 'https://images.pexels.com/photos/247466/pexels-photo-247466.jpeg',
-        caption: `${basePrefix}Light option 5 for ${shortName}: fruit and nut bowl with ginger syrup.`
-      }
-    ];
-  }
-
-  if (category === 'heavy') {
-    return [
-      {
-        type: 'text',
-        body: `${basePrefix}Here are some hearty options for you 👇`
-      },
-      {
-        type: 'text',
-        body: `1. Pounded yam with egusi soup — rich, comforting, and filling.`
-      },
-      {
-        type: 'text',
-        body: `2. Oha soup with fufu — a wholesome heavy meal with deep flavor.`
-      },
-      {
-        type: 'text',
-        body: `3. Ogbono with eba — thick, oily, and very satisfying.`
-      },
-      {
-        type: 'text',
-        body: `4. Fried rice with chicken stew — loaded and delicious.`
-      },
-      {
-        type: 'text',
-        body: `5. Suya platter with spicy beef — bold, hearty, and perfect for a big appetite.`
-      }
-    ];
-  }
-
-  if (category === 'healthy') {
-    const image1 = await searchGoogleImage('grilled fish with steamed greens');
-    const image2 = await searchGoogleImage('okra soup with fish and light swallow');
-    const image3 = await searchGoogleImage('boiled plantain with lean stew');
-    const image4 = await searchGoogleImage('vegetable soup with lean protein');
-    const image5 = await searchGoogleImage('fruit bowl with nuts and honey');
-
-    return [
-      {
-        type: 'text',
-        body: `${basePrefix}Here are some healthy options for you 👇`
-      },
-      {
-        type: 'image',
-        imageUrl: image1 || 'https://images.pexels.com/photos/209540/pexels-photo-209540.jpeg',
-        caption: `${basePrefix}Healthy option 1 for ${shortName}: grilled fish with steamed greens.`
-      },
-      {
-        type: 'image',
-        imageUrl: image2 || 'https://images.pexels.com/photos/1435901/pexels-photo-1435901.jpeg',
-        caption: `${basePrefix}Healthy option 2 for ${shortName}: okra soup with fish and a light swallow.`
-      },
-      {
-        type: 'image',
-        imageUrl: image3 || 'https://images.pexels.com/photos/958545/pexels-photo-958545.jpeg',
-        caption: `${basePrefix}Healthy option 3 for ${shortName}: boiled plantain with lean stew.`
-      },
-      {
-        type: 'image',
-        imageUrl: image4 || 'https://images.pexels.com/photos/461198/pexels-photo-461198.jpeg',
-        caption: `${basePrefix}Healthy option 4 for ${shortName}: vegetable soup with lean protein.`
-      },
-      {
-        type: 'image',
-        imageUrl: image5 || 'https://images.pexels.com/photos/247466/pexels-photo-247466.jpeg',
-        caption: `${basePrefix}Healthy option 5 for ${shortName}: fruit bowl with nuts and honey.`
-      }
-    ];
-  }
-
-  if (category === 'spicy') {
-    const image1 = await searchGoogleImage('suya with onions and chili');
-    const image2 = await searchGoogleImage('pepper soup with meat');
-    const image3 = await searchGoogleImage('spicy jollof rice');
-    const image4 = await searchGoogleImage('peppered goat meat');
-    const image5 = await searchGoogleImage('pepper stew');
-
-    return [
-      {
-        type: 'text',
-        body: `${basePrefix}Here are some spicy options for you 👇`
-      },
-      {
-        type: 'image',
-        imageUrl: image1 || 'https://images.pexels.com/photos/247466/pexels-photo-247466.jpeg',
-        caption: `${basePrefix}Spicy option 1 for ${shortName}: suya with onions and chili.`
-      },
-      {
-        type: 'image',
-        imageUrl: image2 || 'https://images.pexels.com/photos/209540/pexels-photo-209540.jpeg',
-        caption: `${basePrefix}Spicy option 2 for ${shortName}: hearty pepper soup with meat.`
-      },
-      {
-        type: 'image',
-        imageUrl: image3 || 'https://images.pexels.com/photos/461198/pexels-photo-461198.jpeg',
-        caption: `${basePrefix}Spicy option 3 for ${shortName}: spicy jollof rice with extra pepper.`
-      },
-      {
-        type: 'image',
-        imageUrl: image4 || 'https://images.pexels.com/photos/958545/pexels-photo-958545.jpeg',
-        caption: `${basePrefix}Spicy option 4 for ${shortName}: peppered goat meat with bold spices.`
-      },
-      {
-        type: 'image',
-        imageUrl: image5 || 'https://images.pexels.com/photos/1435901/pexels-photo-1435901.jpeg',
-        caption: `${basePrefix}Spicy option 5 for ${shortName}: stew with extra scotch bonnet pepper.`
-      }
-    ];
-  }
-
-  if (category === 'affordable') {
-    const image1 = await searchGoogleImage('beans and plantain');
-    const image2 = await searchGoogleImage('fried rice with chicken');
-    const image3 = await searchGoogleImage('akara and bread');
-    const image4 = await searchGoogleImage('yam porridge with savory sauce');
-    const image5 = await searchGoogleImage('rice and stew');
-
-    return [
-      {
-        type: 'text',
-        body: `${basePrefix}Here are some wallet-friendly options for you 👇`
-      },
-      {
-        type: 'image',
-        imageUrl: image1 || 'https://images.pexels.com/photos/958545/pexels-photo-958545.jpeg',
-        caption: `${basePrefix}Affordable option 1 for ${shortName}: beans and plantain.`
-      },
-      {
-        type: 'image',
-        imageUrl: image2 || 'https://images.pexels.com/photos/461198/pexels-photo-461198.jpeg',
-        caption: `${basePrefix}Affordable option 2 for ${shortName}: fried rice with chicken.`
-      },
-      {
-        type: 'image',
-        imageUrl: image3 || 'https://images.pexels.com/photos/1435901/pexels-photo-1435901.jpeg',
-        caption: `${basePrefix}Affordable option 3 for ${shortName}: akara and bread.`
-      },
-      {
-        type: 'image',
-        imageUrl: image4 || 'https://images.pexels.com/photos/209540/pexels-photo-209540.jpeg',
-        caption: `${basePrefix}Affordable option 4 for ${shortName}: yam porridge with savory sauce.`
-      },
-      {
-        type: 'image',
-        imageUrl: image5 || 'https://images.pexels.com/photos/247466/pexels-photo-247466.jpeg',
-        caption: `${basePrefix}Affordable option 5 for ${shortName}: rice and stew.`
-      }
-    ];
-  }
-
-  return {
-    type: 'text',
-    body: `${basePrefix}I can suggest meals based on your mood, ${shortName}. Try: hungry, light, heavy, healthy, spicy, or affordable.`
-  };
+  const picks = getRandomMeals(meals, 5);
+  return buildMealReplies(picks, basePrefix);
 }
 
 function getMoodButtonsReply(bodyText = 'Got it! Tap a category button or type a mood 😊') {
@@ -396,28 +216,7 @@ function getMoodButtonsReply(bodyText = 'Got it! Tap a category button or type a
 }
 
 async function searchGoogleImage(query) {
-  if (!GOOGLE_API_KEY || !GOOGLE_CSE_ID) {
-    return null;
-  }
-
-  if (imageCache.has(query)) {
-    return imageCache.get(query);
-  }
-
-  try {
-    const url = `https://www.googleapis.com/customsearch/v1?key=${encodeURIComponent(GOOGLE_API_KEY)}&cx=${encodeURIComponent(GOOGLE_CSE_ID)}&searchType=image&q=${encodeURIComponent(query)}&num=1`;
-    const response = await fetch(url);
-    if (!response.ok) return null;
-    const data = await response.json();
-    const imageUrl = data.items?.[0]?.link;
-    if (imageUrl) {
-      imageCache.set(query, imageUrl);
-      return imageUrl;
-    }
-  } catch (error) {
-    console.error('Google image search failed:', error);
-  }
-
+  // Deprecated - removed dynamic Google image search in favor of local catalog
   return null;
 }
 
