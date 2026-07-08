@@ -129,75 +129,30 @@ async function askGrok(userMessage, sessionData = {}) {
 async function buildReply(text, name = 'friend', session = {}) {
   const normalized = text.trim().toLowerCase();
   const shortName = name.split(' ')[0] || 'friend';
-  const mood = getMoodCategory(normalized);
 
+  // Initial greeting - no text
   if (!normalized) {
     return {
       replies: {
-        type: 'interactive',
-        interactive: {
-          type: 'button',
-          body: {
-            text: `Hi ${shortName}! I am Foodie. I can help you choose what to eat. 🍽️`
-          },
-          action: {
-            buttons: [
-              { type: 'reply', reply: { id: 'hungry', title: 'I\'m hungry 👀' } },
-              { type: 'reply', reply: { id: 'what can you do', title: 'What can you do?' } }
-            ]
-          }
-        }
+        type: 'text',
+        body: `Hi! I'm *Foodie* — your personal Nigerian food guide. Tell me you're hungry and I'll handle the rest!`
       },
       nextStage: null
     };
   }
 
-  if (session.stage === 'askCategory') {
-    if (mood) {
-      return {
-        replies: {
-          type: 'text',
-          body: `Yum! What did you eat last? 🍲 😊`
-        },
-        nextStage: 'askLastMeal',
-        sessionData: { mood }
-      };
-    }
-
-    return {
-      replies: getMoodButtonsReply('Hmm, I didn\'t catch that. Pick a tasty mood! 😊'),
-      nextStage: 'askCategory'
-    };
-  }
-
-  if (session.stage === 'askLastMeal') {
-    return {
-      replies: await buildMoodReply(session.mood, shortName, text.trim()),
-      nextStage: null
-    };
-  }
-
+  // Greetings
   if (['hi', 'hello', 'hey', 'start'].includes(normalized)) {
     return {
       replies: {
-        type: 'interactive',
-        interactive: {
-          type: 'button',
-          body: {
-            text: `Hi ${shortName}! 😂 I'm Foodie — your personal Nigerian food guide. What do you want to eat?`
-          },
-          action: {
-            buttons: [
-              { type: 'reply', reply: { id: 'hungry', title: 'I\'m hungry 👀' } },
-              { type: 'reply', reply: { id: 'what can you do', title: 'What can you do?' } }
-            ]
-          }
-        }
+        type: 'text',
+        body: `Hi! I'm *Foodie* — your personal Nigerian food guide. Tell me you're hungry and I'll handle the rest!`
       },
       nextStage: null
     };
   }
 
+  // What can you do
   if (normalized.includes('what can you do') || normalized.includes('what do you do') || normalized.includes('capabilities') || normalized.includes('help')) {
     return {
       replies: {
@@ -208,21 +163,53 @@ async function buildReply(text, name = 'friend', session = {}) {
     };
   }
 
+  // User says hungry
   if (normalized.includes('hungry')) {
-    return {
-      replies: getMoodButtonsReply('Yay! Let\'s pick something yummy 😄'),
-      nextStage: 'askCategory'
-    };
-  }
-
-  if (mood) {
     return {
       replies: {
         type: 'text',
-        body: `Great choice! What did you eat last? 🍲 😊`
+        body: `Hey! 😄 What did you last eat?`
       },
-      nextStage: 'askLastMeal',
-      sessionData: { mood }
+      nextStage: 'askLastMeal'
+    };
+  }
+
+  // Stage: Ask what they last ate
+  if (session.stage === 'askLastMeal') {
+    return {
+      replies: {
+        type: 'text',
+        body: `Got it! What are you in the mood for?`
+      },
+      nextStage: 'askMood',
+      sessionData: { lastMeal: text.trim() }
+    };
+  }
+
+  // Stage: Ask mood/preference
+  if (session.stage === 'askMood') {
+    return {
+      replies: {
+        type: 'text',
+        body: `Nice. Any health goals I should know about?`
+      },
+      nextStage: 'askHealthGoals',
+      sessionData: { lastMeal: session.lastMeal, mood: text.trim() }
+    };
+  }
+
+  // Stage: Ask health goals
+  if (session.stage === 'askHealthGoals') {
+    const recommendations = await buildMoodReply('light', shortName, session.lastMeal || 'something');
+    return {
+      replies: [
+        {
+          type: 'text',
+          body: `Based on what you told me — here are my top picks for you:`
+        },
+        ...Array.isArray(recommendations) ? recommendations : [recommendations]
+      ],
+      nextStage: null
     };
   }
 
@@ -241,7 +228,7 @@ async function buildReply(text, name = 'friend', session = {}) {
   return {
     replies: {
       type: 'text',
-      body: `I can suggest meals based on your mood, ${shortName}. Try: hungry, light, heavy, healthy, spicy, or affordable.`
+      body: `Just say you're hungry and I'll guide you through finding the perfect meal! 😊`
     },
     nextStage: null
   };
