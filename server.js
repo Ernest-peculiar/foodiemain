@@ -93,10 +93,7 @@ async function buildReply(text, name = 'friend', session = {}) {
 
   if (!normalized) {
     return {
-      replies: {
-        type: 'text',
-        body: `Hi ${shortName}! I am Foodie. I can help you choose what to eat. Reply with: hungry, light, heavy, healthy, spicy, affordable, or just say hi.`
-      },
+      replies: getMoodButtonsReply(`Hi ${shortName}! I am Foodie. I can help you choose what to eat. 🍽️`),
       nextStage: null
     };
   }
@@ -131,6 +128,16 @@ async function buildReply(text, name = 'friend', session = {}) {
       replies: {
         type: 'text',
         body: `Hi ${shortName}! 😂 I'm Foodie — your personal Nigerian food guide. What do you want to eat? Reply with hungry, light, heavy, healthy, spicy, or affordable.`
+      },
+      nextStage: null
+    };
+  }
+
+  if (normalized.includes('what can you do') || normalized.includes('what do you do') || normalized.includes('capabilities') || normalized.includes('help')) {
+    return {
+      replies: {
+        type: 'text',
+        body: `I help you: 🍽️ Decide what to eat based on your mood & goals 🔄 Avoid meal repetition 🏪 Find nearby vendors selling your meal 📋 Plan weekly meals (Premium) Just say you're hungry to get started!`
       },
       nextStage: null
     };
@@ -372,9 +379,8 @@ function getMoodButtonsReply(bodyText = 'Got it! Tap a category button or type a
       },
       action: {
         buttons: [
-          { type: 'reply', reply: { id: 'light', title: '🥗 Light & lovely' } },
-          { type: 'reply', reply: { id: 'spicy', title: '🌶️ Spicy & bold' } },
-          { type: 'reply', reply: { id: 'surprise', title: '🌟 Surprise me' } }
+          { type: 'reply', reply: { id: 'hungry', title: 'I\'m hungry 👀' } },
+          { type: 'reply', reply: { id: 'what can you do', title: 'What can you do?' } }
         ]
       }
     }
