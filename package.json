@@ -1,0 +1,17 @@
+{
+  "name": "foodie-whatsapp-bot",
+  "version": "1.0.0",
+  "description": "WhatsApp Business API starter bot for the Foodie concept",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "tunnel": "ngrok http 3000"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.1",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "ngrok": "^5.0.0-beta.2"
+  }
+}
