@@ -127,10 +127,11 @@ async function askGrok(userMessage, sessionData = {}) {
 }
 
 async function buildReply(text, name = 'friend', session = {}) {
+  const normalized = text.trim().toLowerCase();
   const shortName = name.split(' ')[0] || 'friend';
+  const mood = getMoodCategory(normalized);
 
-  // If no text, show initial greeting with buttons
-  if (!text.trim()) {
+  if (!normalized) {
     return {
       replies: {
         type: 'interactive',
@@ -151,7 +152,81 @@ async function buildReply(text, name = 'friend', session = {}) {
     };
   }
 
-  // Use Grok API for ALL user messages
+  if (session.stage === 'askCategory') {
+    if (mood) {
+      return {
+        replies: {
+          type: 'text',
+          body: `Yum! What did you eat last? 🍲 😊`
+        },
+        nextStage: 'askLastMeal',
+        sessionData: { mood }
+      };
+    }
+
+    return {
+      replies: getMoodButtonsReply('Hmm, I didn\'t catch that. Pick a tasty mood! 😊'),
+      nextStage: 'askCategory'
+    };
+  }
+
+  if (session.stage === 'askLastMeal') {
+    return {
+      replies: await buildMoodReply(session.mood, shortName, text.trim()),
+      nextStage: null
+    };
+  }
+
+  if (['hi', 'hello', 'hey', 'start'].includes(normalized)) {
+    return {
+      replies: {
+        type: 'interactive',
+        interactive: {
+          type: 'button',
+          body: {
+            text: `Hi ${shortName}! 😂 I'm Foodie — your personal Nigerian food guide. What do you want to eat?`
+          },
+          action: {
+            buttons: [
+              { type: 'reply', reply: { id: 'hungry', title: 'I\'m hungry 👀' } },
+              { type: 'reply', reply: { id: 'what can you do', title: 'What can you do?' } }
+            ]
+          }
+        }
+      },
+      nextStage: null
+    };
+  }
+
+  if (normalized.includes('what can you do') || normalized.includes('what do you do') || normalized.includes('capabilities') || normalized.includes('help')) {
+    return {
+      replies: {
+        type: 'text',
+        body: `I help you: 🍽️ Decide what to eat based on your mood & goals 🔄 Avoid meal repetition 🏪 Find nearby vendors selling your meal 📋 Plan weekly meals (Premium) Just say you're hungry to get started!`
+      },
+      nextStage: null
+    };
+  }
+
+  if (normalized.includes('hungry')) {
+    return {
+      replies: getMoodButtonsReply('Yay! Let\'s pick something yummy 😄'),
+      nextStage: 'askCategory'
+    };
+  }
+
+  if (mood) {
+    return {
+      replies: {
+        type: 'text',
+        body: `Great choice! What did you eat last? 🍲 😊`
+      },
+      nextStage: 'askLastMeal',
+      sessionData: { mood }
+    };
+  }
+
+  // Use Grok API for unknown queries
   const grokResponse = await askGrok(text, session);
   if (grokResponse) {
     return {
@@ -163,11 +238,10 @@ async function buildReply(text, name = 'friend', session = {}) {
     };
   }
 
-  // Fallback if Grok fails
   return {
     replies: {
       type: 'text',
-      body: `I'm Foodie, your food guide! Tell me what kind of food you're interested in, and I'll help you decide. 😊`
+      body: `I can suggest meals based on your mood, ${shortName}. Try: hungry, light, heavy, healthy, spicy, or affordable.`
     },
     nextStage: null
   };
