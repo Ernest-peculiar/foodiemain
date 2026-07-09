@@ -12,12 +12,93 @@ const WHATSAPP_API_VERSION = process.env.WHATSAPP_API_VERSION || 'v22.0';
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 const GOOGLE_CSE_ID = process.env.GOOGLE_CSE_ID;
 const GROK_API_KEY = process.env.GROK_API_KEY;
+const DEBUG = process.env.DEBUG === 'true';
+
 const imageCache = new Map();
+const sessions = new Map();
+
+// Centralizing stage names avoids typo bugs like 'askLastmeal' vs 'askLastMeal'
+// scattered across the file.
+const STAGES = {
+  ASK_LAST_MEAL: 'askLastMeal',
+  ASK_MOOD: 'askMood',
+  ASK_HEALTH_GOALS: 'askHealthGoals'
+};
+
+// Single source of truth for mood text -> category, replacing the old duplicated
+// getMoodCategory()/moodMapping split where one was dead code and they disagreed.
+const MOOD_KEYWORDS = {
+  light: 'light',
+  heavy: 'heavy',
+  filling: 'heavy',
+  healthy: 'healthy',
+  spicy: 'spicy',
+  pepper: 'spicy',
+  hot: 'spicy',
+  affordable: 'affordable',
+  budget: 'affordable',
+  cheap: 'affordable',
+  economy: 'affordable',
+  surprise: 'surprise',
+  anything: 'surprise',
+  whatever: 'surprise',
+  soup: 'healthy',
+  salad: 'healthy',
+  grilled: 'healthy',
+  protein: 'healthy'
+};
+
+function mapMoodToCategory(userMoodText, fallback = 'light') {
+  const normalized = (userMoodText || '').toLowerCase();
+  for (const [keyword, category] of Object.entries(MOOD_KEYWORDS)) {
+    if (normalized.includes(keyword)) return category;
+  }
+  return fallback;
+}
+
+// Each entry's searchQuery is what we use to look up a real matching photo via
+// searchGoogleImage(). fallbackImageUrl only applies if that search is unavailable
+// or fails, so we're not stuck with one recycled stock photo per multiple dishes.
+const MOOD_CATALOG = {
+  light: [
+    { caption: 'Nigerian moi moi with a side of pap — steamed bean pudding.', searchQuery: 'Nigerian moi moi pap', fallbackImageUrl: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=500' },
+    { caption: 'Akara and fresh fried plantain — crispy bean fritters.', searchQuery: 'Nigerian akara plantain', fallbackImageUrl: 'https://images.unsplash.com/photo-1585238341710-4913d3ca7cc0?w=500' },
+    { caption: 'Salad bowl with grilled fish and light Nigerian flavors.', searchQuery: 'grilled fish salad bowl', fallbackImageUrl: 'https://images.unsplash.com/photo-1540189549336-e6e99c3679fe?w=500' },
+    { caption: 'Steamed vegetables with lean protein — healthy & nutritious.', searchQuery: 'steamed vegetables lean protein plate', fallbackImageUrl: 'https://images.unsplash.com/photo-1512621776951-a57141f2eefd?w=500' },
+    { caption: 'Fruit and nut bowl with ginger syrup — refreshing & light.', searchQuery: 'fruit nut bowl ginger', fallbackImageUrl: 'https://images.unsplash.com/photo-1599599810694-b5ac1ea27830?w=500' }
+  ],
+  heavy: [
+    { caption: 'Pounded yam with egusi soup — rich, comforting, and filling.', searchQuery: 'pounded yam egusi soup', fallbackImageUrl: 'https://images.unsplash.com/photo-1645112411341-6c4ee36b2e5d?w=500' },
+    { caption: 'Oha soup with fufu — a wholesome heavy meal with deep flavor.', searchQuery: 'oha soup fufu Nigerian', fallbackImageUrl: 'https://images.unsplash.com/photo-1604909052743-94e838986d24?w=500' },
+    { caption: 'Ogbono with eba — thick, oily, and very satisfying.', searchQuery: 'ogbono soup eba Nigerian', fallbackImageUrl: 'https://images.unsplash.com/photo-1631515243349-e0cb75fb8d3a?w=500' },
+    { caption: 'Fried rice with chicken stew — loaded and delicious.', searchQuery: 'Nigerian fried rice chicken stew', fallbackImageUrl: 'https://images.unsplash.com/photo-1551632786-de41ec16a01d?w=500' },
+    { caption: 'Suya platter with spicy beef — bold, hearty, and perfect.', searchQuery: 'suya beef skewers platter', fallbackImageUrl: 'https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=500' }
+  ],
+  healthy: [
+    { caption: 'Grilled fish with steamed greens — protein-rich & healthy.', searchQuery: 'grilled fish steamed greens', fallbackImageUrl: 'https://images.unsplash.com/photo-1519708227418-c8fd9a32b7a2?w=500' },
+    { caption: 'Okra soup with fish and a light swallow — nutritious Nigerian classic.', searchQuery: 'Nigerian okra soup fish', fallbackImageUrl: 'https://images.unsplash.com/photo-1607330289024-1535c6b4e1c1?w=500' },
+    { caption: 'Boiled plantain with lean stew — balanced & wholesome.', searchQuery: 'boiled plantain stew', fallbackImageUrl: 'https://images.unsplash.com/photo-1599599810694-b5ac1ea27830?w=500' },
+    { caption: 'Vegetable soup with lean protein — fresh & healthy.', searchQuery: 'Nigerian vegetable soup', fallbackImageUrl: 'https://images.unsplash.com/photo-1540189549336-e6e99c3679fe?w=500' },
+    { caption: 'Fruit bowl with nuts and honey — natural & energizing.', searchQuery: 'fruit bowl nuts honey', fallbackImageUrl: 'https://images.unsplash.com/photo-1490474418585-ba9bad8fd0ea?w=500' }
+  ],
+  spicy: [
+    { caption: 'Suya with onions and chili — spicy & smoky Nigerian delight.', searchQuery: 'suya onions chili', fallbackImageUrl: 'https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=500' },
+    { caption: 'Hearty pepper soup with meat — warming & spicy.', searchQuery: 'Nigerian pepper soup meat', fallbackImageUrl: 'https://images.unsplash.com/photo-1583608205776-bfd35f0d9f83?w=500' },
+    { caption: 'Spicy jollof rice with extra pepper — bold & flavorful.', searchQuery: 'spicy jollof rice', fallbackImageUrl: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=500' },
+    { caption: 'Peppered goat meat with bold spices — intense flavor.', searchQuery: 'peppered goat meat Nigerian', fallbackImageUrl: 'https://images.unsplash.com/photo-1544025162-d76694265947?w=500' },
+    { caption: 'Stew with extra scotch bonnet pepper — fiery hot!', searchQuery: 'scotch bonnet pepper stew', fallbackImageUrl: 'https://images.unsplash.com/photo-1606850780554-b55ea4dd0b70?w=500' }
+  ],
+  affordable: [
+    { caption: 'Beans and plantain — budget-friendly & filling.', searchQuery: 'beans plantain Nigerian', fallbackImageUrl: 'https://images.unsplash.com/photo-1626082927389-6cd097cee6a6?w=500' },
+    { caption: 'Fried rice with chicken — affordable & satisfying.', searchQuery: 'fried rice chicken plate', fallbackImageUrl: 'https://images.unsplash.com/photo-1551632786-de41ec16a01d?w=500' },
+    { caption: 'Akara and bread — cheap & cheerful morning meal.', searchQuery: 'akara bread Nigerian breakfast', fallbackImageUrl: 'https://images.unsplash.com/photo-1585238341710-4913d3ca7cc0?w=500' },
+    { caption: 'Yam porridge with savory sauce — economical & tasty.', searchQuery: 'Nigerian yam porridge', fallbackImageUrl: 'https://images.unsplash.com/photo-1604908176997-125f25cc6f3d?w=500' },
+    { caption: 'Rice and stew — classic affordable combo.', searchQuery: 'rice and stew Nigerian', fallbackImageUrl: 'https://images.unsplash.com/photo-1567620905732-2d1ec7ab7445?w=500' }
+  ]
+};
 
 app.use(express.json());
 app.use('/images', express.static(path.join(__dirname, 'public/images')));
-
-const sessions = new Map();
 
 app.get('/', (req, res) => {
   res.send('Foodie WhatsApp bot is running.');
@@ -36,9 +117,10 @@ app.get('/webhook', (req, res) => {
 });
 
 app.post('/webhook', async (req, res) => {
- 
-  console.log("📩 WEBHOOK RECEIVED!");
-  console.log(JSON.stringify(req.body, null, 2));
+  if (DEBUG) {
+    console.log('📩 WEBHOOK RECEIVED!');
+    console.log(JSON.stringify(req.body, null, 2));
+  }
 
   const body = req.body;
 
@@ -49,36 +131,7 @@ app.post('/webhook', async (req, res) => {
         const messages = value.messages || [];
 
         for (const message of messages) {
-          const from = message.from;
-          const text = message.text?.body
-            || message.button?.payload
-            || message.interactive?.button_reply?.id
-            || message.interactive?.button_reply?.title
-            || message.interactive?.list_reply?.id
-            || message.interactive?.list_reply?.title
-            || '';
-          const senderName = value.contacts?.[0]?.profile?.name || 'Foodie friend';
-          const session = sessions.get(from) || {};
-
-          console.log(`Message from ${from}: ${text}`);
-
-          const result = await buildReply(text, senderName, session);
-          const replies = result.replies;
-
-          if (from) {
-            if (result.nextStage) {
-              sessions.set(from, { stage: result.nextStage, ...(result.sessionData || {}) });
-            } else if (session.stage) {
-              sessions.delete(from);
-            }
-          }
-
-          if (from && replies) {
-            for (const reply of Array.isArray(replies) ? replies : [replies]) {
-              console.log(`Replying with: ${reply.type === 'image' ? reply.caption : reply.body}`);
-              await sendWhatsAppMessage(from, reply);
-            }
-          }
+          await handleIncomingMessage(message, value);
         }
       }
     }
@@ -86,6 +139,38 @@ app.post('/webhook', async (req, res) => {
 
   res.sendStatus(200);
 });
+
+async function handleIncomingMessage(message, value) {
+  const from = message.from;
+  const text = message.text?.body
+    || message.button?.payload
+    || message.interactive?.button_reply?.id
+    || message.interactive?.button_reply?.title
+    || message.interactive?.list_reply?.id
+    || message.interactive?.list_reply?.title
+    || '';
+  const senderName = value.contacts?.[0]?.profile?.name || 'Foodie friend';
+  const session = sessions.get(from) || {};
+
+  if (DEBUG) console.log(`Message from ${from}: ${text}`);
+
+  const result = await buildReply(text, senderName, session);
+  const replies = result.replies;
+
+  if (from) {
+    if (result.nextStage) {
+      sessions.set(from, { stage: result.nextStage, ...(result.sessionData || {}) });
+    } else if (session.stage) {
+      sessions.delete(from);
+    }
+  }
+
+  if (from && replies) {
+    for (const reply of Array.isArray(replies) ? replies : [replies]) {
+      await sendWhatsAppMessage(from, reply);
+    }
+  }
+}
 
 async function askGrok(userMessage, sessionData = {}) {
   if (!GROK_API_KEY) {
@@ -126,135 +211,120 @@ async function askGrok(userMessage, sessionData = {}) {
   }
 }
 
-async function buildReply(text, name = 'friend', session = {}) {
-  const normalized = text.trim().toLowerCase();
-  const shortName = name.split(' ')[0] || 'friend';
+// --- Stage handlers -------------------------------------------------------
+// Each handler takes (text, name, session) and returns { replies, nextStage, sessionData? }.
+// Keeping these separate (instead of one long if/else chain) makes each step
+// independently testable and keeps stage-specific logic from leaking into others.
 
-  // Initial greeting - no text
-  if (!normalized) {
-    return {
-      replies: {
-        type: 'text',
-        body: `Hi! I'm *Foodie* — your personal Nigerian food guide. Tell me you're hungry and I'll handle the rest!`
-      },
-      nextStage: null
-    };
-  }
-
-  // Greetings
-  if (['hi', 'hello', 'hey', 'start'].includes(normalized)) {
-    return {
-      replies: {
-        type: 'text',
-        body: `Hi! I'm *Foodie* — your personal Nigerian food guide. Tell me you're hungry and I'll handle the rest!`
-      },
-      nextStage: null
-    };
-  }
-
-  // What can you do
-  if (normalized.includes('what can you do') || normalized.includes('what do you do') || normalized.includes('capabilities') || normalized.includes('help')) {
-    return {
-      replies: {
-        type: 'text',
-        body: `I help you: 🍽️ Decide what to eat based on your mood & goals 🔄 Avoid meal repetition 🏪 Find nearby vendors selling your meal 📋 Plan weekly meals (Premium) Just say you're hungry to get started!`
-      },
-      nextStage: null
-    };
-  }
-
-  // User says hungry
-  if (normalized.includes('hungry')) {
-    return {
-      replies: {
-        type: 'text',
-        body: `Hey! 😄 What did you last eat?`
-      },
-      nextStage: 'askLastMeal'
-    };
-  }
-
-  // Stage: Ask what they last ate
-  if (session.stage === 'askLastMeal') {
+function handleGreeting() {
   return {
+    replies: {
+      type: 'text',
+      body: `Hi! I'm *Foodie* — your personal Nigerian food guide. Tell me you're hungry and I'll handle the rest!`
+    },
+    nextStage: null
+  };
+}
+
+function handleCapabilities() {
+  return {
+    replies: {
+      type: 'text',
+      body: `I help you: 🍽️ Decide what to eat based on your mood & goals 🔄 Avoid meal repetition 🏪 Find nearby vendors selling your meal 📋 Plan weekly meals (Premium) Just say you're hungry to get started!`
+    },
+    nextStage: null
+  };
+}
+
+function handleHungry() {
+  return {
+    replies: {
+      type: 'text',
+      body: `Hey! 😄 What did you last eat?`
+    },
+    nextStage: STAGES.ASK_LAST_MEAL
+  };
+}
+
+function handleAskLastMeal(text) {
+  return {
+    // Bug fix: the mood buttons were built (getMoodButtonsReply) but never sent.
+    // Attaching them here means the user finally gets tappable options instead
+    // of only free-text prompts.
     replies: [
       { type: 'text', body: `Got it! What are you in the mood for?` },
       getMoodButtonsReply()
     ],
-    nextStage: 'askMood',
+    nextStage: STAGES.ASK_MOOD,
     sessionData: { lastMeal: text.trim() }
   };
 }
 
-  // Stage: Ask mood/preference
-  if (session.stage === 'askMood') {
-    return {
-      replies: {
+function handleAskMood(text, name, session) {
+  return {
+    replies: {
+      type: 'text',
+      body: `Nice. Any health goals I should know about?`
+    },
+    nextStage: STAGES.ASK_HEALTH_GOALS,
+    sessionData: { lastMeal: session.lastMeal, userMood: text.trim() }
+  };
+}
+
+async function handleAskHealthGoals(text, name, session, shortName) {
+  const selectedMood = mapMoodToCategory(session.userMood);
+  const recommendations = await buildMoodReply(selectedMood, shortName, session.lastMeal || 'something');
+
+  const vendorPrompt = `You are a Nigerian food delivery expert. Recommend 3-4 specific restaurants or food vendors in Nigeria that serve ${selectedMood} Nigerian foods. Format as:\n🏪 Restaurant Name - Brief description\nKeep it concise for WhatsApp. Focus on real or likely vendor names.`;
+  const vendors = await askGrok(vendorPrompt, {});
+
+  return {
+    replies: [
+      {
         type: 'text',
-        body: `Nice. Any health goals I should know about?`
+        body: `✨ Based on what you told me — here are my top picks for you:\n\n*${selectedMood.charAt(0).toUpperCase() + selectedMood.slice(1)} Nigerian Foods:*`
       },
-      nextStage: 'askHealthGoals',
-      sessionData: { lastMeal: session.lastMeal, userMood: text.trim() }
-    };
-  }
-
-  // Stage: Ask health goals
-  if (session.stage === 'askHealthGoals') {
-    // Map user's mood preference to a category
-    const userMoodText = session.userMood || 'light';
-    const moodMapping = {
-      'light': 'light',
-      'heavy': 'heavy',
-      'healthy': 'healthy',
-      'spicy': 'spicy',
-      'affordable': 'affordable',
-      'soup': 'healthy',
-      'salad': 'healthy',
-      'grilled': 'healthy',
-      'protein': 'healthy'
-    };
-    
-    // Find the best matching category
-    let selectedMood = 'light';
-    for (const [key, value] of Object.entries(moodMapping)) {
-      if (userMoodText.toLowerCase().includes(key)) {
-        selectedMood = value;
-        break;
+      ...(Array.isArray(recommendations) ? recommendations : [recommendations]),
+      {
+        type: 'text',
+        body: `\n🏪 *Places to find these meals:*\n${vendors || '• Jollof House\n• Healthy Eats NG\n• Local food vendors'}\n\nEnjoy your meal! 😋`
       }
-    }
-    
-    const recommendations = await buildMoodReply(selectedMood, shortName, session.lastMeal || 'something');
-    
-    // Get vendor recommendations using Grok
-    const vendorPrompt = `You are a Nigerian food delivery expert. Recommend 3-4 specific restaurants or food vendors in Nigeria that serve ${selectedMood} Nigerian foods. Format as:\n🏪 Restaurant Name - Brief description\nKeep it concise for WhatsApp. Focus on real or likely vendor names.`;
-    const vendors = await askGrok(vendorPrompt, {});
-    
-    return {
-      replies: [
-        {
-          type: 'text',
-          body: `✨ Based on what you told me — here are my top picks for you:\n\n*${selectedMood.charAt(0).toUpperCase() + selectedMood.slice(1)} Nigerian Foods:*`
-        },
-        ...(Array.isArray(recommendations) ? recommendations : [recommendations]),
-        {
-          type: 'text',
-          body: `\n🏪 *Places to find these meals:*\n${vendors || '• Jollof House\n• Healthy Eats NG\n• Local food vendors'}\n\nEnjoy your meal! 😋`
-        }
-      ],
-      nextStage: null
-    };
+    ],
+    nextStage: null
+  };
+}
+
+const STAGE_HANDLERS = {
+  [STAGES.ASK_LAST_MEAL]: handleAskLastMeal,
+  [STAGES.ASK_MOOD]: handleAskMood,
+  [STAGES.ASK_HEALTH_GOALS]: handleAskHealthGoals
+};
+
+async function buildReply(text, name = 'friend', session = {}) {
+  const normalized = text.trim().toLowerCase();
+  const shortName = name.split(' ')[0] || 'friend';
+
+  if (!normalized) return handleGreeting();
+  if (['hi', 'hello', 'hey', 'start'].includes(normalized)) return handleGreeting();
+
+  if (
+    normalized.includes('what can you do')
+    || normalized.includes('what do you do')
+    || normalized.includes('capabilities')
+    || normalized.includes('help')
+  ) {
+    return handleCapabilities();
   }
 
-  // Use Grok API for unknown queries
+  if (normalized.includes('hungry')) return handleHungry();
+
+  const handler = STAGE_HANDLERS[session.stage];
+  if (handler) return handler(text, name, session, shortName);
+
+  // Fall through to Grok for anything unrecognized.
   const grokResponse = await askGrok(text, session);
   if (grokResponse) {
-    return {
-      replies: {
-        type: 'text',
-        body: grokResponse
-      },
-      nextStage: null
-    };
+    return { replies: { type: 'text', body: grokResponse }, nextStage: null };
   }
 
   return {
@@ -266,208 +336,30 @@ async function buildReply(text, name = 'friend', session = {}) {
   };
 }
 
-function getMoodCategory(normalized) {
-  if (normalized.includes('light') && normalized.includes('healthy')) return 'healthy';
-  if (normalized.includes('light')) return 'light';
-  if (normalized.includes('heavy') || normalized.includes('filling')) return 'heavy';
-  if (normalized.includes('healthy')) return 'healthy';
-  if (normalized.includes('spicy') || normalized.includes('pepper') || normalized.includes('hot')) return 'spicy';
-  if (normalized.includes('affordable') || normalized.includes('budget') || normalized.includes('cheap') || normalized.includes('economy')) return 'affordable';
-  if (normalized.includes('surprise') || normalized.includes('anything') || normalized.includes('whatever')) return 'surprise';
-  return null;
-}
+// --- Mood recommendations --------------------------------------------------
 
 async function buildMoodReply(category, shortName, lastMeal) {
   const basePrefix = lastMeal ? `Based on what you last ate (${lastMeal}), ` : '';
+  const items = MOOD_CATALOG[category];
 
-  if (category === 'light') {
-    return [
-      {
-        type: 'text',
-        body: `${basePrefix}Here are some lighter options for you 👇`
-      },
-      {
-        type: 'image',
-        imageUrl: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=500',
-        caption: `${basePrefix}Light option 1: Nigerian moi moi with a side of pap - Steamed bean pudding.`
-      },
-      {
-        type: 'image',
-        imageUrl: 'https://images.unsplash.com/photo-1585238341710-4913d3ca7cc0?w=500',
-        caption: `${basePrefix}Light option 2: Akara and fresh fried plantain - Crispy bean fritters.`
-      },
-      {
-        type: 'image',
-        imageUrl: 'https://images.unsplash.com/photo-1540189549336-e6e99c3679fe?w=500',
-        caption: `${basePrefix}Light option 3: Salad bowl with grilled fish and light Nigerian flavors.`
-      },
-      {
-        type: 'image',
-        imageUrl: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=500',
-        caption: `${basePrefix}Light option 4: Steamed vegetables with lean protein - Healthy & nutritious.`
-      },
-      {
-        type: 'image',
-        imageUrl: 'https://images.unsplash.com/photo-1599599810694-b5ac1ea27830?w=500',
-        caption: `${basePrefix}Light option 5: Fruit and nut bowl with ginger syrup - Refreshing & light.`
-      }
-    ];
+  if (category === 'surprise' || !items) {
+    return {
+      type: 'text',
+      body: `${basePrefix}I can suggest meals based on your mood, ${shortName}. Try: hungry, light, heavy, healthy, spicy, or affordable.`
+    };
   }
 
-  if (category === 'heavy') {
-    return [
-      {
-        type: 'text',
-        body: `${basePrefix}Here are some hearty options for you 👇`
-      },
-      {
-        type: 'image',
-        imageUrl: 'https://images.unsplash.com/photo-1645112411341-6c4ee36b2e5d?w=500',
-        caption: `🍲 Pounded yam with egusi soup — rich, comforting, and filling.`
-      },
-      {
-        type: 'image',
-        imageUrl: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=500',
-        caption: `🍲 Oha soup with fufu — a wholesome heavy meal with deep flavor.`
-      },
-      {
-        type: 'image',
-        imageUrl: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=500',
-        caption: `🍲 Ogbono with eba — thick, oily, and very satisfying.`
-      },
-      {
-        type: 'image',
-        imageUrl: 'https://images.unsplash.com/photo-1551632786-de41ec16a01d?w=500',
-        caption: `🍚 Fried rice with chicken stew — loaded and delicious.`
-      },
-      {
-        type: 'image',
-        imageUrl: 'https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=500',
-        caption: `🥩 Suya platter with spicy beef — bold, hearty, and perfect.`
-      }
-    ];
-  }
+  const images = await Promise.all(
+    items.map(async (item) => {
+      const imageUrl = (await searchGoogleImage(item.searchQuery)) || item.fallbackImageUrl;
+      return { type: 'image', imageUrl, caption: `${basePrefix}${item.caption}` };
+    })
+  );
 
-  if (category === 'healthy') {
-    return [
-      {
-        type: 'text',
-        body: `${basePrefix}Here are some healthy options for you 👇`
-      },
-      {
-        type: 'image',
-        imageUrl: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=500',
-        caption: `🐟 Grilled fish with steamed greens - Protein-rich & healthy.`
-      },
-      {
-        type: 'image',
-        imageUrl: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=500',
-        caption: `🥘 Okra soup with fish and a light swallow - Nutritious Nigerian classic.`
-      },
-      {
-        type: 'image',
-        imageUrl: 'https://images.unsplash.com/photo-1599599810694-b5ac1ea27830?w=500',
-        caption: `🍌 Boiled plantain with lean stew - Balanced & wholesome.`
-      },
-      {
-        type: 'image',
-        imageUrl: 'https://images.unsplash.com/photo-1540189549336-e6e99c3679fe?w=500',
-        caption: `🥗 Vegetable soup with lean protein - Fresh & healthy.`
-      },
-      {
-        type: 'image',
-        imageUrl: 'https://images.unsplash.com/photo-1599599810694-b5ac1ea27830?w=500',
-        caption: `🍎 Fruit bowl with nuts and honey - Natural & energizing.`
-      }
-    ];
-  }
-
-  if (category === 'spicy') {
-    return [
-      {
-        type: 'text',
-        body: `${basePrefix}Here are some spicy options for you 👇`
-      },
-      {
-        type: 'image',
-        imageUrl: 'https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=500',
-        caption: `🌶️ Suya with onions and chili - Spicy & smoky Nigerian delight.`
-      },
-      {
-        type: 'image',
-        imageUrl: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=500',
-        caption: `🌶️ Hearty pepper soup with meat - Warming & spicy.`
-      },
-      {
-        type: 'image',
-        imageUrl: 'https://images.unsplash.com/photo-1551632786-de41ec16a01d?w=500',
-        caption: `🌶️ Spicy jollof rice with extra pepper - Bold & flavorful.`
-      },
-      {
-        type: 'image',
-        imageUrl: 'https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=500',
-        caption: `🌶️ Peppered goat meat with bold spices - Intense flavor.`
-      },
-      {
-        type: 'image',
-        imageUrl: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=500',
-        caption: `🌶️ Stew with extra scotch bonnet pepper - Fiery hot!`
-      }
-    ];
-  }
-
-  if (category === 'affordable') {
-    return [
-      {
-        type: 'text',
-        body: `${basePrefix}Here are some wallet-friendly options for you 👇`
-      },
-      {
-        type: 'image',
-        imageUrl: 'https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSE5UD25IlDZA5bFrhFNlm8rZlMVI2Zu9zo5obekKmfOg&s=10',
-        caption: `💰 Beans and plantain - Budget-friendly & filling.`
-      },
-      {
-        type: 'image',
-        imageUrl: 'https://images.unsplash.com/photo-1551632786-de41ec16a01d?w=500',
-        caption: `💰 Fried rice with chicken - Affordable & satisfying.`
-      },
-      {
-        type: 'image',
-        imageUrl: 'https://images.unsplash.com/photo-1585238341710-4913d3ca7cc0?w=500',
-        caption: `💰 Akara and bread - Cheap & cheerful morning meal.`
-      },
-      {
-        type: 'image',
-        imageUrl: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=500',
-        caption: `💰 Yam porridge with savory sauce - Economical & tasty.`
-      },
-      {
-        type: 'image',
-        imageUrl: 'https://images.unsplash.com/photo-1551632786-de41ec16a01d?w=500',
-        caption: `💰 Rice and stew - Classic affordable combo.`
-      }
-    ];
-  }
-
-  if (category === 'surprise') {
-    return [
-      {
-        type: 'text',
-        body: `${basePrefix}${shortName}, here is a surprise pick: jollof rice with fried plantain and peppered fish.`
-      },
-      {
-        type: 'image',
-        imageUrl: 'https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSE5UD25IlDZA5bFrhFNlm8rZlMVI2Zu9zo5obekKmfOg&s=10',
-        caption: `🎉 Surprise option: jollof rice with fried plantain and peppered fish.`
-      }
-    ];
-  }
-
-  return {
-    type: 'text',
-    body: `${basePrefix}I can suggest meals based on your mood, ${shortName}. Try: hungry, light, heavy, healthy, spicy, or affordable.`
-  };
+  return [
+    { type: 'text', body: `${basePrefix}Here are some ${category} options for you 👇` },
+    ...images
+  ];
 }
 
 function getMoodButtonsReply(bodyText = 'Got it! Tap a category button or type a mood 😊') {
@@ -475,9 +367,7 @@ function getMoodButtonsReply(bodyText = 'Got it! Tap a category button or type a
     type: 'interactive',
     interactive: {
       type: 'list',
-      body: {
-        text: bodyText
-      },
+      body: { text: bodyText },
       action: {
         button: 'Choose',
         sections: [
@@ -502,13 +392,8 @@ function getLocalImageUrl(filename) {
 }
 
 async function searchGoogleImage(query) {
-  if (!GOOGLE_API_KEY || !GOOGLE_CSE_ID) {
-    return null;
-  }
-
-  if (imageCache.has(query)) {
-    return imageCache.get(query);
-  }
+  if (!GOOGLE_API_KEY || !GOOGLE_CSE_ID) return null;
+  if (imageCache.has(query)) return imageCache.get(query);
 
   try {
     const url = `https://www.googleapis.com/customsearch/v1?key=${encodeURIComponent(GOOGLE_API_KEY)}&cx=${encodeURIComponent(GOOGLE_CSE_ID)}&searchType=image&q=${encodeURIComponent(query)}&num=1`;
@@ -560,12 +445,10 @@ async function sendWhatsAppMessage(to, reply) {
   });
   const data = await response.json().catch(() => ({}));
 
-  console.log('WhatsApp API response:', data);
-
   if (!response.ok) {
     console.error('Failed to send WhatsApp message:', data);
-  } else {
-    console.log('✅ Message sent successfully!');
+  } else if (DEBUG) {
+    console.log('✅ Message sent successfully!', data);
   }
 }
 
