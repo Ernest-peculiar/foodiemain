@@ -1005,9 +1005,10 @@ async function resolveImageUrl(item) {
   return searched || item.fallbackImageUrl;
 }
 
-// Requires the Places API (New or legacy Nearby Search) enabled on GOOGLE_API_KEY —
-// this is a separate API from the Custom Search JSON API used for images, so it
-// needs enabling separately in Google Cloud Console.
+// Requires the Places API (New or legacy Nearby Search) enabled AND billing
+// active on the Google Cloud project tied to GOOGLE_API_KEY — this is a
+// separate API from the Custom Search JSON API used for images, so it needs
+// enabling separately in Google Cloud Console.
 async function findNearbyVendors(latitude, longitude, mood, orderIntent) {
   if (!GOOGLE_API_KEY) {
     console.warn('Google API key is not configured; cannot look up nearby vendors.');
@@ -1022,18 +1023,15 @@ async function findNearbyVendors(latitude, longitude, mood, orderIntent) {
     const baseUrl = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${latitude},${longitude}&radius=5000&type=restaurant&key=${encodeURIComponent(GOOGLE_API_KEY)}`;
     const keywordUrl = `${baseUrl}&keyword=${encodeURIComponent(keyword)}`;
 
-    let response = await fetch(keywordUrl);
-    if (!response.ok) return null;
+    let results = await fetchPlacesResults(keywordUrl, 'keyword search');
 
-    let data = await response.json();
-    let results = (data.results || []).slice(0, 5);
-
-    if (results.length === 0 && (orderIntent || mood)) {
-      // Fallback to a less restrictive search if keyword filtering returns nothing.
-      response = await fetch(baseUrl);
-      if (!response.ok) return null;
-      data = await response.json();
-      results = (data.results || []).slice(0, 5);
+    // The "Nigerian food" keyword filter is narrow — most restaurants aren't
+    // literally tagged with that phrase on Google — so always fall back to a
+    // plain "restaurant" search near the point if the filtered one comes back
+    // empty. (Previously this fallback only ran when mood/orderIntent was
+    // set, so a plain "Order now" tap with neither would always dead-end here.)
+    if (results.length === 0) {
+      results = await fetchPlacesResults(baseUrl, 'base search');
     }
 
     return results;
@@ -1041,6 +1039,26 @@ async function findNearbyVendors(latitude, longitude, mood, orderIntent) {
     console.error('Places nearby search failed:', error);
     return null;
   }
+}
+
+// Google's Nearby Search returns HTTP 200 even when something's actually
+// wrong (bad/restricted key, Places API not enabled, billing not active,
+// query limit hit) — the real signal is the "status" field in the JSON body.
+// Logging it here means a misconfigured key shows up clearly in your server
+// logs instead of just silently producing "no restaurants found" forever.
+async function fetchPlacesResults(url, label) {
+  const response = await fetch(url);
+  if (!response.ok) {
+    console.error(`Places ${label} HTTP error:`, response.status);
+    return [];
+  }
+
+  const data = await response.json();
+  if (data.status && data.status !== 'OK' && data.status !== 'ZERO_RESULTS') {
+    console.error(`Places ${label} returned status "${data.status}"${data.error_message ? `: ${data.error_message}` : ''}`);
+  }
+
+  return (data.results || []).slice(0, 5);
 }
 
 // Nearby Search doesn't return delivery/dine-in/takeout or today's exact closing
