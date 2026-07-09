@@ -22,7 +22,8 @@ const sessions = new Map();
 const STAGES = {
   ASK_LAST_MEAL: 'askLastMeal',
   ASK_MOOD: 'askMood',
-  ASK_HEALTH_GOALS: 'askHealthGoals'
+  ASK_HEALTH_GOALS: 'askHealthGoals',
+  AWAIT_LOCATION: 'awaitLocation'
 };
 
 // Single source of truth for mood text -> category, replacing the old duplicated
@@ -105,6 +106,15 @@ function formatFoodCaption(item, basePrefix) {
   return `${basePrefix}*${item.name}*\n${item.description}\n🏷 ${tagLine} — ~${item.kcal} kcal`;
 }
 
+// "Surprise" has no catalog entry of its own — it pulls a random handful from
+// across every other category. (Previously this fell through to the generic
+// "no items found" text with no image at all — that was the bug.)
+function getSurpriseItems(count = 3) {
+  const allItems = Object.values(MOOD_CATALOG).flat();
+  const shuffled = [...allItems].sort(() => Math.random() - 0.5);
+  return shuffled.slice(0, count);
+}
+
 app.use(express.json());
 app.use('/images', express.static(path.join(__dirname, 'public/images')));
 
@@ -150,19 +160,28 @@ app.post('/webhook', async (req, res) => {
 
 async function handleIncomingMessage(message, value) {
   const from = message.from;
-  const text = message.text?.body
-    || message.button?.payload
-    || message.interactive?.button_reply?.id
-    || message.interactive?.button_reply?.title
-    || message.interactive?.list_reply?.id
-    || message.interactive?.list_reply?.title
-    || '';
   const senderName = value.contacts?.[0]?.profile?.name || 'Foodie friend';
   const session = sessions.get(from) || {};
 
-  if (DEBUG) console.log(`Message from ${from}: ${text}`);
+  let result;
 
-  const result = await buildReply(text, senderName, session);
+  if (message.type === 'location' && message.location) {
+    const { latitude, longitude } = message.location;
+    const replies = await buildVendorLocationReply(latitude, longitude, session.selectedMood);
+    result = { replies, nextStage: null };
+  } else {
+    const text = message.text?.body
+      || message.button?.payload
+      || message.interactive?.button_reply?.id
+      || message.interactive?.button_reply?.title
+      || message.interactive?.list_reply?.id
+      || message.interactive?.list_reply?.title
+      || '';
+
+    if (DEBUG) console.log(`Message from ${from}: ${text}`);
+    result = await buildReply(text, senderName, session);
+  }
+
   const replies = result.replies;
 
   if (from) {
@@ -291,9 +310,6 @@ async function handleAskHealthGoals(text, name, session, shortName) {
   const selectedMood = mapMoodToCategory(session.userMood);
   const recommendations = await buildMoodReply(selectedMood, shortName, session.lastMeal || 'something');
 
-  const vendorPrompt = `You are a Nigerian food delivery expert. Recommend 3-4 specific restaurants or food vendors in Nigeria that serve ${selectedMood} Nigerian foods. Format as:\n🏪 Restaurant Name - Brief description\nKeep it concise for WhatsApp. Focus on real or likely vendor names.`;
-  const vendors = await askGrok(vendorPrompt, {});
-
   return {
     replies: [
       {
@@ -301,19 +317,40 @@ async function handleAskHealthGoals(text, name, session, shortName) {
         body: `✨ Based on what you told me — here are my top picks for you:\n\n*${selectedMood.charAt(0).toUpperCase() + selectedMood.slice(1)} Nigerian Foods:*`
       },
       ...(Array.isArray(recommendations) ? recommendations : [recommendations]),
-      {
-        type: 'text',
-        body: `\n🏪 *Places to find these meals:*\n${vendors || '• Jollof House\n• Healthy Eats NG\n• Local food vendors'}\n\nEnjoy your meal! 😋`
-      }
+      getLocationRequestReply()
     ],
-    nextStage: null
+    // Hang on to the mood so once we get coordinates we can search for
+    // vendors that actually match what was just recommended.
+    nextStage: STAGES.AWAIT_LOCATION,
+    sessionData: { selectedMood }
   };
+}
+
+// If the user types a place name instead of tapping "share location", try to
+// geocode it rather than dead-ending the conversation.
+async function handleAwaitLocation(text, name, session) {
+  const coords = await geocodeText(text);
+
+  if (!coords) {
+    return {
+      replies: {
+        type: 'text',
+        body: `I couldn't pin that location. Tap "Share location" above, or type an area name like "Lekki, Lagos".`
+      },
+      nextStage: STAGES.AWAIT_LOCATION,
+      sessionData: { selectedMood: session.selectedMood }
+    };
+  }
+
+  const replies = await buildVendorLocationReply(coords.latitude, coords.longitude, session.selectedMood);
+  return { replies, nextStage: null };
 }
 
 const STAGE_HANDLERS = {
   [STAGES.ASK_LAST_MEAL]: handleAskLastMeal,
   [STAGES.ASK_MOOD]: handleAskMood,
-  [STAGES.ASK_HEALTH_GOALS]: handleAskHealthGoals
+  [STAGES.ASK_HEALTH_GOALS]: handleAskHealthGoals,
+  [STAGES.AWAIT_LOCATION]: handleAwaitLocation
 };
 
 async function buildReply(text, name = 'friend', session = {}) {
@@ -357,9 +394,9 @@ async function buildReply(text, name = 'friend', session = {}) {
 
 async function buildMoodReply(category, shortName, lastMeal) {
   const basePrefix = lastMeal ? `Based on what you last ate (${lastMeal}), ` : '';
-  const items = MOOD_CATALOG[category];
+  const items = category === 'surprise' ? getSurpriseItems() : MOOD_CATALOG[category];
 
-  if (category === 'surprise' || !items) {
+  if (!items || items.length === 0) {
     return {
       type: 'text',
       body: `${basePrefix}I can suggest meals based on your mood, ${shortName}. Try: hungry, light, heavy, healthy, spicy, or affordable.`
@@ -373,8 +410,12 @@ async function buildMoodReply(category, shortName, lastMeal) {
     })
   );
 
+  const headerText = category === 'surprise'
+    ? `${basePrefix}Here's a surprise pick for you, ${shortName} 🎉`
+    : `${basePrefix}Here are some ${category} options for you 👇`;
+
   return [
-    { type: 'text', body: `${basePrefix}Here are some ${category} options for you 👇` },
+    { type: 'text', body: headerText },
     ...images
   ];
 }
@@ -404,6 +445,19 @@ function getMoodButtonsReply(bodyText = 'Got it! Tap a category button or type a
   };
 }
 
+// Native WhatsApp "request location" message — shows a button that opens the
+// device's location picker and sends back a message.type === 'location' payload.
+function getLocationRequestReply(bodyText = 'Share your location so I can show you vendors near you 📍') {
+  return {
+    type: 'interactive',
+    interactive: {
+      type: 'location_request_message',
+      body: { text: bodyText },
+      action: { name: 'send_location' }
+    }
+  };
+}
+
 function getLocalImageUrl(filename) {
   return `${PUBLIC_URL}/images/${encodeURIComponent(filename)}`;
 }
@@ -429,6 +483,83 @@ async function searchGoogleImage(query) {
   return null;
 }
 
+// Requires the Places API (New or legacy Nearby Search) enabled on GOOGLE_API_KEY —
+// this is a separate API from the Custom Search JSON API used for images, so it
+// needs enabling separately in Google Cloud Console.
+async function findNearbyVendors(latitude, longitude, mood) {
+  if (!GOOGLE_API_KEY) {
+    console.warn('Google API key is not configured; cannot look up nearby vendors.');
+    return null;
+  }
+
+  const keyword = mood ? `${mood} Nigerian food` : 'Nigerian food';
+
+  try {
+    const url = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${latitude},${longitude}&radius=5000&type=restaurant&keyword=${encodeURIComponent(keyword)}&key=${encodeURIComponent(GOOGLE_API_KEY)}`;
+    const response = await fetch(url);
+    if (!response.ok) return null;
+    const data = await response.json();
+    return (data.results || []).slice(0, 5);
+  } catch (error) {
+    console.error('Places nearby search failed:', error);
+    return null;
+  }
+}
+
+// Fallback for when the user types a place name instead of tapping "share location".
+async function geocodeText(query) {
+  if (!GOOGLE_API_KEY) return null;
+
+  try {
+    const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(query)}&key=${encodeURIComponent(GOOGLE_API_KEY)}`;
+    const response = await fetch(url);
+    if (!response.ok) return null;
+    const data = await response.json();
+    const loc = data.results?.[0]?.geometry?.location;
+    return loc ? { latitude: loc.lat, longitude: loc.lng } : null;
+  } catch (error) {
+    console.error('Geocoding failed:', error);
+    return null;
+  }
+}
+
+// Builds the reply once we have real coordinates: a text summary plus one
+// WhatsApp location pin per vendor so the user can tap straight into maps.
+async function buildVendorLocationReply(latitude, longitude, mood) {
+  const vendors = await findNearbyVendors(latitude, longitude, mood);
+
+  if (!vendors || vendors.length === 0) {
+    return {
+      type: 'text',
+      body: `I couldn't find vendors near you right now — try Jollof House, Healthy Eats NG, or a local food vendor nearby. 🏪`
+    };
+  }
+
+  const listText = vendors
+    .map((v, i) => `${i + 1}. *${v.name}*${v.rating ? ` (⭐ ${v.rating})` : ''}\n${v.vicinity || ''}`)
+    .join('\n\n');
+
+  const replies = [
+    { type: 'text', body: `📍 Here's what's near you:\n\n${listText}` }
+  ];
+
+  for (const vendor of vendors) {
+    if (vendor.geometry?.location) {
+      replies.push({
+        type: 'location',
+        location: {
+          latitude: vendor.geometry.location.lat,
+          longitude: vendor.geometry.location.lng,
+          name: vendor.name,
+          address: vendor.vicinity || ''
+        }
+      });
+    }
+  }
+
+  return replies;
+}
+
 async function sendWhatsAppMessage(to, reply) {
   if (!WHATSAPP_TOKEN || !WHATSAPP_PHONE_NUMBER_ID) {
     console.warn('WhatsApp credentials are not configured.');
@@ -448,6 +579,8 @@ async function sendWhatsAppMessage(to, reply) {
     if (caption) payload.caption = caption;
   } else if (reply.type === 'interactive') {
     payload.interactive = reply.interactive;
+  } else if (reply.type === 'location') {
+    payload.location = reply.location;
   } else {
     payload.text = { body: reply.body };
   }
