@@ -726,26 +726,6 @@ async function createPaystackTransaction(email, amount) {
     return null;
   }
 }
-  const idx = parseInt((text || '').replace('item_', ''), 10);
-  const item = Number.isInteger(idx) ? getOrderMenuItemByIndex(idx) : null;
-
-  if (!item) {
-    return {
-      replies: { type: 'text', body: `Please tap an item from the menu above 👆` },
-      nextStage: STAGES.ORDER_SELECT_ITEM,
-      sessionData: { selectedVendor: session.selectedVendor, userLat: session.userLat, userLng: session.userLng }
-    };
-  }
-
-  return {
-    replies: {
-      type: 'text',
-      body: `*${item.name}* — how many would you like? (e.g. "2")`
-    },
-    nextStage: STAGES.ORDER_ENTER_QTY,
-    sessionData: { selectedVendor: session.selectedVendor, selectedItemIdx: idx, userLat: session.userLat, userLng: session.userLng }
-  };
-
 
 // Step 4: quantity given, finalize and notify.
 async function handleOrderEnterQty(text, name, session, shortName) {
