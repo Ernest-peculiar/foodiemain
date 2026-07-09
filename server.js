@@ -165,9 +165,7 @@ const FUNAI_RESTAURANTS = [
     rating: 3.7,
     lat: 6.1568941,
     lng: 8.1398204,
-    phone: '+234 905 847 8334',
-    placeId: 'ChIJvf4y1uaXXBARJpZOCfJ5NPU',
-    fallbackImageUrl: 'https://images.unsplash.com/photo-1488459716781-31db52582fe9?w=500'
+    phone: '+234 905 847 8334'
   },
   {
     name: 'Native Delicacies Restaurant Abakaliki/FUNAI',
@@ -175,9 +173,7 @@ const FUNAI_RESTAURANTS = [
     rating: 3.9,
     lat: 6.3157774,
     lng: 8.119793,
-    phone: '+234 803 309 3528',
-    placeId: 'ChIJoft2J_qhXBARNc51pOopJT8',
-    fallbackImageUrl: 'https://images.unsplash.com/photo-1604909052743-94e838986d24?w=500'
+    phone: '+234 803 309 3528'
   },
   {
     name: 'Kilimanjaro Restaurant',
@@ -185,9 +181,7 @@ const FUNAI_RESTAURANTS = [
     rating: 4.2,
     lat: 6.3199672,
     lng: 8.1110518,
-    phone: '+234 700 5454 3663',
-    placeId: 'ChIJcZnSFNihXBARbbfgbWBbsNA',
-    fallbackImageUrl: 'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=500'
+    phone: '+234 700 5454 3663'
   },
   {
     name: 'Nourisha Continental Fast Food',
@@ -195,9 +189,7 @@ const FUNAI_RESTAURANTS = [
     rating: 4.1,
     lat: 6.3148849,
     lng: 8.1206802,
-    phone: '+234 702 500 7453',
-    placeId: 'ChIJobtBfeShXBARSy2w7DAs3B0',
-    fallbackImageUrl: 'https://images.unsplash.com/photo-1550547660-d9450f859349?w=500'
+    phone: '+234 702 500 7453'
   },
   {
     name: 'Chicken Republic Abakaliki',
@@ -205,9 +197,7 @@ const FUNAI_RESTAURANTS = [
     rating: 4.1,
     lat: 6.3243033,
     lng: 8.1099392,
-    phone: '+234 809 016 5942',
-    placeId: 'ChIJoSmd0V-hXBARmoEKVsjtXRI',
-    fallbackImageUrl: 'https://images.unsplash.com/photo-1562967914-608f82629710?w=500'
+    phone: '+234 809 016 5942'
   },
   {
     name: 'Tastia Restaurant, Bakery and Cafe',
@@ -215,9 +205,7 @@ const FUNAI_RESTAURANTS = [
     rating: 4.1,
     lat: 6.3247597,
     lng: 8.112678,
-    phone: '+234 703 998 5714',
-    placeId: 'ChIJ8x_cJq2hXBARDwTRkGOKkpA',
-    fallbackImageUrl: 'https://images.unsplash.com/photo-1517433670267-08bbd4be890f?w=500'
+    phone: '+234 703 998 5714'
   },
   {
     name: 'Crunchies Fried Chicken',
@@ -225,9 +213,7 @@ const FUNAI_RESTAURANTS = [
     rating: 3.9,
     lat: 6.3136291,
     lng: 8.1067907,
-    phone: '+234 906 243 9146',
-    placeId: 'ChIJuasq_k2gXBARoXhm4QCZ624',
-    fallbackImageUrl: 'https://images.unsplash.com/photo-1626645738196-c2a7c87a8f58?w=500'
+    phone: '+234 906 243 9146'
   }
 ];
 
@@ -451,16 +437,12 @@ function handleRecommendMeals() {
 }
 
 // Kicks off ordering: skip the location prompt and go straight to the curated
-// FUNAI-area restaurant list (see FUNAI_RESTAURANTS above for why), with a
-// photo of each restaurant so it doesn't feel like a bare text list.
-async function handleOrderNow() {
-  const restaurantImages = await buildRestaurantImageReplies(FUNAI_RESTAURANTS);
-
+// FUNAI-area restaurant list (see FUNAI_RESTAURANTS above for why).
+function handleOrderNow() {
   return {
     replies: [
-      { type: 'text', body: `Let's get you fed 🛒 Here's what's around FUNAI 👇` },
-      ...restaurantImages,
-      getRestaurantListReply(FUNAI_RESTAURANTS, 'Tap a restaurant to see the menu')
+      { type: 'text', body: `Let's get you fed 🛒 Here's what's around FUNAI — tap a restaurant to see the menu.` },
+      getRestaurantListReply(FUNAI_RESTAURANTS)
     ],
     nextStage: STAGES.ORDER_SELECT_RESTAURANT,
     sessionData: { nearbyVendors: FUNAI_RESTAURANTS }
@@ -899,56 +881,6 @@ async function resolveImageUrl(item) {
   }
   const searched = await searchGoogleImage(item.searchQuery);
   return searched || item.fallbackImageUrl;
-}
-
-const restaurantImageCache = new Map();
-
-// Pulls a real photo of the restaurant via the Places Photo API (needs the
-// 'photos' field from Place Details, which costs a call — cached per placeId
-// so we only pay it once per restaurant, not once per order).
-async function fetchPlacePhotoUrl(placeId) {
-  if (!GOOGLE_API_KEY || !placeId) return null;
-  if (restaurantImageCache.has(placeId)) return restaurantImageCache.get(placeId);
-
-  try {
-    const detailsUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${encodeURIComponent(placeId)}&fields=photos&key=${encodeURIComponent(GOOGLE_API_KEY)}`;
-    const response = await fetch(detailsUrl);
-    if (!response.ok) return null;
-    const data = await response.json();
-    const photoRef = data.result?.photos?.[0]?.photo_reference;
-    if (!photoRef) return null;
-
-    const photoUrl = `https://maps.googleapis.com/maps/api/place/photo?maxwidth=800&photo_reference=${encodeURIComponent(photoRef)}&key=${encodeURIComponent(GOOGLE_API_KEY)}`;
-    restaurantImageCache.set(placeId, photoUrl);
-    return photoUrl;
-  } catch (error) {
-    console.error('Place photo lookup failed:', error);
-    return null;
-  }
-}
-
-// Resolution order mirrors resolveImageUrl(): a real photo of that specific
-// restaurant (Places Photo API) > a generic Google Image Search match on the
-// name > the hand-picked stock fallback baked into FUNAI_RESTAURANTS.
-async function resolveRestaurantImage(restaurant) {
-  if (restaurant.placeId) {
-    const photoUrl = await fetchPlacePhotoUrl(restaurant.placeId);
-    if (photoUrl) return photoUrl;
-  }
-  const searched = await searchGoogleImage(`${restaurant.name} restaurant Abakaliki`);
-  return searched || restaurant.fallbackImageUrl;
-}
-
-function formatRestaurantCaption(restaurant) {
-  const stars = restaurant.rating ? ` ${'⭐'.repeat(Math.round(restaurant.rating))} ${restaurant.rating}` : '';
-  return `*${restaurant.name}*${stars}\n${restaurant.vicinity}`;
-}
-
-async function buildRestaurantImageReplies(restaurants) {
-  return Promise.all(restaurants.map(async (restaurant) => {
-    const imageUrl = await resolveRestaurantImage(restaurant);
-    return { type: 'image', imageUrl, caption: formatRestaurantCaption(restaurant) };
-  }));
 }
 
 // Requires the Places API (New or legacy Nearby Search) enabled on GOOGLE_API_KEY —
