@@ -252,12 +252,36 @@ async function askGrok(userMessage, sessionData = {}, { creative = false } = {})
 // Keeping these separate (instead of one long if/else chain) makes each step
 // independently testable and keeps stage-specific logic from leaking into others.
 
-function handleGreeting() {
+const STATIC_GREETING = `Hi! I'm *Foodie* — your personal Nigerian food guide. Tell me you're hungry and I'll handle the rest!`;
+
+// Two buttons covering the two things people actually do right after a
+// greeting, so they can tap instead of typing free text.
+function getGreetingButtonsReply(bodyText = 'Or tap an option below 👇') {
   return {
-    replies: {
-      type: 'text',
-      body: `Hi! I'm *Foodie* — your personal Nigerian food guide. Tell me you're hungry and I'll handle the rest!`
-    },
+    type: 'interactive',
+    interactive: {
+      type: 'button',
+      body: { text: bodyText },
+      action: {
+        buttons: [
+          { type: 'reply', reply: { id: 'hungry', title: "I'm hungry" } },
+          { type: 'reply', reply: { id: 'help', title: 'What can you do?' } }
+        ]
+      }
+    }
+  };
+}
+
+async function handleGreeting(seedText = 'hello') {
+  // Grok writes the actual greeting so it doesn't feel like the same canned
+  // line every time — falls back to the static line if Grok's unavailable.
+  const grokReply = await askGrok(seedText, {}, { creative: true });
+
+  return {
+    replies: [
+      { type: 'text', body: grokReply || STATIC_GREETING },
+      getGreetingButtonsReply()
+    ],
     nextStage: null
   };
 }
@@ -371,11 +395,11 @@ async function buildReply(text, name = 'friend', session = {}) {
   const normalized = text.trim().toLowerCase();
   const shortName = name.split(' ')[0] || 'friend';
 
-  if (!normalized) return handleGreeting();
-  if (['hi', 'hello', 'hey', 'start'].includes(normalized)) return handleGreeting();
+  if (!normalized) return handleGreeting('hello');
+  if (['hi', 'hello', 'hey', 'start'].includes(normalized)) return handleGreeting(text);
 
   // Quick-reply buttons shown after vendor recommendations.
-  if (normalized === 'start_over') return handleGreeting();
+  if (normalized === 'start_over') return handleGreeting("let's start over");
   if (normalized === 'try_different_meals') return handleHungry();
   if (normalized === 'get_meal_plan') return handleMealPlanPlaceholder();
 
