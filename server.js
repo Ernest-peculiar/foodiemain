@@ -149,6 +149,74 @@ function getOrderMenuItemByIndex(idx) {
   return ORDER_MENU_ITEMS[idx];
 }
 
+// Curated restaurant list for the AE-FUNAI / Abakaliki area. We hardcode this
+// instead of a live Places nearby-search because the campus itself (Ndufu-
+// Alike, Ikwo) is rural and sparsely mapped — a 5km radius search from campus
+// turns up almost nothing, while the real restaurants students actually use
+// sit ~18-20km away in Abakaliki town. Curating avoids empty results and an
+// extra API round trip on every "Order now" tap. Update/reorder this list as
+// you learn what's actually good, add real vendor WhatsApp numbers once you
+// have them (for direct notification instead of relaying through
+// ORDER_NOTIFY_NUMBER), or swap in a live search later for other campuses.
+const FUNAI_RESTAURANTS = [
+  {
+    name: 'Nwakpu Market',
+    vicinity: 'Ndufu-Alike, right by campus — cheap staples, not sit-down dining',
+    rating: 3.7,
+    lat: 6.1568941,
+    lng: 8.1398204,
+    phone: '+234 905 847 8334'
+  },
+  {
+    name: 'Native Delicacies Restaurant Abakaliki/FUNAI',
+    vicinity: '66 Ogoja Rd, Azuiyi Udene, Abakaliki — bar/lounge/pool on site',
+    rating: 3.9,
+    lat: 6.3157774,
+    lng: 8.119793,
+    phone: '+234 803 309 3528'
+  },
+  {
+    name: 'Kilimanjaro Restaurant',
+    vicinity: '2B Ogoja Rd, Abakaliki — also does pizza',
+    rating: 4.2,
+    lat: 6.3199672,
+    lng: 8.1110518,
+    phone: '+234 700 5454 3663'
+  },
+  {
+    name: 'Nourisha Continental Fast Food',
+    vicinity: '68-70 Ogoja Rd, Azuiyi Udene, Abakaliki',
+    rating: 4.1,
+    lat: 6.3148849,
+    lng: 8.1206802,
+    phone: '+234 702 500 7453'
+  },
+  {
+    name: 'Chicken Republic Abakaliki',
+    vicinity: 'Water Works Rd, Abakaliki',
+    rating: 4.1,
+    lat: 6.3243033,
+    lng: 8.1099392,
+    phone: '+234 809 016 5942'
+  },
+  {
+    name: 'Tastia Restaurant, Bakery and Cafe',
+    vicinity: '1 Brackenbury St, Abakaliki — restaurant + bakery + cafe',
+    rating: 4.1,
+    lat: 6.3247597,
+    lng: 8.112678,
+    phone: '+234 703 998 5714'
+  },
+  {
+    name: 'Crunchies Fried Chicken',
+    vicinity: '45 Afikpo Rd, Abakaliki',
+    rating: 3.9,
+    lat: 6.3136291,
+    lng: 8.1067907,
+    phone: '+234 906 243 9146'
+  }
+];
+
 app.use(express.json());
 app.use('/images', express.static(path.join(__dirname, 'public/images')));
 
@@ -368,15 +436,16 @@ function handleRecommendMeals() {
   };
 }
 
-// Kicks off ordering: ask for the user's location so we can pull real nearby
-// restaurants from Google Places.
+// Kicks off ordering: skip the location prompt and go straight to the curated
+// FUNAI-area restaurant list (see FUNAI_RESTAURANTS above for why).
 function handleOrderNow() {
   return {
     replies: [
-      { type: 'text', body: `Let's get you fed 🛒 Share your location and I'll show you what's nearby.` },
-      getLocationRequestReply()
+      { type: 'text', body: `Let's get you fed 🛒 Here's what's around FUNAI — tap a restaurant to see the menu.` },
+      getRestaurantListReply(FUNAI_RESTAURANTS)
     ],
-    nextStage: STAGES.ORDER_AWAIT_LOCATION
+    nextStage: STAGES.ORDER_SELECT_RESTAURANT,
+    sessionData: { nearbyVendors: FUNAI_RESTAURANTS }
   };
 }
 
