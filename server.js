@@ -12,6 +12,7 @@ const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const WHATSAPP_API_VERSION = process.env.WHATSAPP_API_VERSION || 'v22.0';
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 const GOOGLE_CSE_ID = process.env.GOOGLE_CSE_ID;
+const GEOAPIFY_API_KEY = process.env.GEOAPIFY_API_KEY;
 const GROK_API_KEY = process.env.GROK_API_KEY;
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
 const DEBUG = process.env.DEBUG === 'true';
@@ -1005,77 +1006,52 @@ async function resolveImageUrl(item) {
   return searched || item.fallbackImageUrl;
 }
 
-// Requires the Places API (New or legacy Nearby Search) enabled AND billing
-// active on the Google Cloud project tied to GOOGLE_API_KEY — this is a
-// separate API from the Custom Search JSON API used for images, so it needs
-// enabling separately in Google Cloud Console.
+// Geoapify Places API (free tier: 3,000 requests/day, no billing account
+// required — see https://www.geoapify.com/places-api/). Data comes from
+// OpenStreetMap, so it won't have Google-style ratings/reviews, but it covers
+// the "find restaurants near these coordinates" job for free. Note: Geoapify's
+// filter/bias params take coordinates as lon,lat (GeoJSON order), the
+// opposite of the lat,lng order used elsewhere in this file — easy to get
+// backwards, so it's called out explicitly in the query string below.
 async function findNearbyVendors(latitude, longitude, mood, orderIntent) {
-  if (!GOOGLE_API_KEY) {
-    console.warn('Google API key is not configured; cannot look up nearby vendors.');
+  if (!GEOAPIFY_API_KEY) {
+    console.warn('Geoapify API key is not configured; cannot look up nearby vendors.');
     return null;
   }
 
-  let keyword = 'Nigerian food';
-  if (orderIntent) keyword = `${orderIntent} Nigerian food`;
-  else if (mood) keyword = `${mood} Nigerian food`;
-
   try {
-    const baseUrl = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${latitude},${longitude}&radius=5000&type=restaurant&key=${encodeURIComponent(GOOGLE_API_KEY)}`;
-    const keywordUrl = `${baseUrl}&keyword=${encodeURIComponent(keyword)}`;
+    const categories = 'catering.restaurant,catering.fast_food,catering.cafe';
+    const url = `https://api.geoapify.com/v2/places`
+      + `?categories=${encodeURIComponent(categories)}`
+      + `&filter=circle:${longitude},${latitude},5000` // lon,lat,radius(m) — lon first
+      + `&bias=proximity:${longitude},${latitude}` // lon,lat — lon first
+      + `&limit=10`
+      + `&apiKey=${encodeURIComponent(GEOAPIFY_API_KEY)}`;
 
-    let results = await fetchPlacesResults(keywordUrl, 'keyword search');
-
-    // The "Nigerian food" keyword filter is narrow — most restaurants aren't
-    // literally tagged with that phrase on Google — so always fall back to a
-    // plain "restaurant" search near the point if the filtered one comes back
-    // empty. (Previously this fallback only ran when mood/orderIntent was
-    // set, so a plain "Order now" tap with neither would always dead-end here.)
-    if (results.length === 0) {
-      results = await fetchPlacesResults(baseUrl, 'base search');
+    const response = await fetch(url);
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => null);
+      console.error(`Geoapify places search HTTP error ${response.status}:`, errorBody?.message || errorBody);
+      return [];
     }
 
-    return results;
-  } catch (error) {
-    console.error('Places nearby search failed:', error);
-    return null;
-  }
-}
-
-// Google's Nearby Search returns HTTP 200 even when something's actually
-// wrong (bad/restricted key, Places API not enabled, billing not active,
-// query limit hit) — the real signal is the "status" field in the JSON body.
-// Logging it here means a misconfigured key shows up clearly in your server
-// logs instead of just silently producing "no restaurants found" forever.
-async function fetchPlacesResults(url, label) {
-  const response = await fetch(url);
-  if (!response.ok) {
-    console.error(`Places ${label} HTTP error:`, response.status);
-    return [];
-  }
-
-  const data = await response.json();
-  if (data.status && data.status !== 'OK' && data.status !== 'ZERO_RESULTS') {
-    console.error(`Places ${label} returned status "${data.status}"${data.error_message ? `: ${data.error_message}` : ''}`);
-  }
-
-  return (data.results || []).slice(0, 5);
-}
-
-// Nearby Search doesn't return delivery/dine-in/takeout or today's exact closing
-// time — those need a Place Details call per venue (extra API cost, which is why
-// we only enrich the top 3 rather than all 5).
-async function fetchPlaceDetails(placeId) {
-  if (!GOOGLE_API_KEY || !placeId) return null;
-
-  try {
-    const fields = 'name,rating,opening_hours,delivery,dine_in,takeout,geometry';
-    const url = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${encodeURIComponent(placeId)}&fields=${fields}&key=${encodeURIComponent(GOOGLE_API_KEY)}`;
-    const response = await fetch(url);
-    if (!response.ok) return null;
     const data = await response.json();
-    return data.result || null;
+    const features = data.features || [];
+
+    return features.slice(0, 5).map((f) => {
+      const p = f.properties || {};
+      return {
+        name: p.name || p.address_line1 || 'Unnamed restaurant',
+        vicinity: p.formatted || p.address_line2 || '',
+        rating: null, // Geoapify/OSM doesn't provide star ratings
+        lat: p.lat,
+        lng: p.lon,
+        phone: p.contact?.phone || p.datasource?.raw?.phone || null,
+        place_id: p.place_id
+      };
+    });
   } catch (error) {
-    console.error('Place details lookup failed:', error);
+    console.error('Geoapify places search failed:', error);
     return null;
   }
 }
@@ -1090,45 +1066,22 @@ function distanceKm(lat1, lon1, lat2, lon2) {
   return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
 }
 
-function formatClockTime(hhmm) {
-  if (!hhmm || hhmm.length !== 4) return null;
-  let hours = parseInt(hhmm.slice(0, 2), 10);
-  const minutes = hhmm.slice(2);
-  const ampm = hours >= 12 ? 'PM' : 'AM';
-  hours = hours % 12 || 12;
-  return `${hours}${minutes !== '00' ? ':' + minutes : ''} ${ampm}`;
-}
-
-function getTodayClosingTime(periods) {
-  if (!periods) return null;
-  const today = new Date().getDay(); // 0 = Sunday
-  const todayPeriod = periods.find((p) => p.open?.day === today);
-  return todayPeriod?.close?.time ? formatClockTime(todayPeriod.close.time) : null;
-}
-
-function getServiceText(details) {
-  const services = [];
-  if (details.delivery) services.push('Delivery available');
-  if (details.dine_in) services.push('Dine-in');
-  if (details.takeout) services.push('Takeout');
-  return services.length > 0 ? services.join(' & ') : 'Walk-in';
-}
-
+// Geoapify already returns everything we need (name, address, coordinates)
+// in the single /v2/places call inside findNearbyVendors, so — unlike the old
+// Google integration — there's no separate "details" round trip needed here.
+// OSM-sourced data doesn't reliably expose ratings, live open/closed status,
+// or delivery/dine-in/takeout flags, so those simply come through as unknown.
 async function enrichVendor(vendor, userLat, userLng) {
-  const details = await fetchPlaceDetails(vendor.place_id);
-  const lat = vendor.geometry?.location?.lat;
-  const lng = vendor.geometry?.location?.lng;
-
   return {
     name: vendor.name,
     vicinity: vendor.vicinity,
-    rating: details?.rating ?? vendor.rating,
-    openNow: details?.opening_hours?.open_now ?? vendor.opening_hours?.open_now,
-    closingTime: getTodayClosingTime(details?.opening_hours?.periods),
-    serviceText: getServiceText(details || {}),
-    distanceKm: (lat != null && lng != null) ? distanceKm(userLat, userLng, lat, lng) : null,
-    lat,
-    lng
+    rating: vendor.rating,
+    openNow: null,
+    closingTime: null,
+    serviceText: vendor.phone ? `📞 ${vendor.phone}` : 'Contact info unavailable',
+    distanceKm: (vendor.lat != null && vendor.lng != null) ? distanceKm(userLat, userLng, vendor.lat, vendor.lng) : null,
+    lat: vendor.lat,
+    lng: vendor.lng
   };
 }
 
