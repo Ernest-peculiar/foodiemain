@@ -166,6 +166,23 @@ function parseEmail(text) {
   return match ? match[0] : null;
 }
 
+// Pulls an explicit restaurant name out of phrasing like "order rice from
+// Glamour" or "rice from Mama Put". This is a plain heuristic (looks for
+// "from <name>" at the end of the message) — it can't verify the place is
+// real, it just captures what the user typed so we can use it as-is.
+function detectVendorNameFromText(text) {
+  const match = (text || '').match(/\bfrom\s+([a-z0-9&'.\- ]{2,40})$/i);
+  if (!match) return null;
+  const cleaned = match[1].trim().replace(/[.?!]+$/, '');
+  return cleaned.length > 0 ? cleaned : null;
+}
+
+// Turns whatever casing the user typed ("glamour", "GLAMOUR") into a
+// consistent display form ("Glamour") for confirmations and staff notifications.
+function titleCase(str) {
+  return (str || '').replace(/\w\S*/g, (w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+}
+
 function detectOrderFoodRequest(text) {
   if (!text) return null;
   const normalized = text.toLowerCase();
@@ -547,18 +564,26 @@ function getRestaurantListReply(vendors, bodyText = 'Nearby restaurants') {
   };
 }
 
-// Step 2: restaurant picked. We don't have that restaurant's real menu (Places
-// doesn't expose one), so we offer our curated dish list against it, grouped
-// into sections by mood category to stay under WhatsApp's list-row limits.
+// Step 2: restaurant picked — either tapped from the list, or typed by hand
+// (e.g. the user names a place we didn't list, or didn't list one at all).
+// We don't have real per-restaurant menus (Places doesn't expose one), so
+// either way we offer our curated dish list against whichever vendor we end
+// up with.
 function handleOrderSelectRestaurant(text, name, session) {
-  const idx = parseInt((text || '').replace('vendor_', ''), 10);
-  const vendor = Number.isInteger(idx) ? session.nearbyVendors?.[idx] : null;
+  const trimmed = (text || '').trim();
+  const idx = parseInt(trimmed.replace('vendor_', ''), 10);
+  const vendorFromList = Number.isInteger(idx) && trimmed.startsWith('vendor_') ? session.nearbyVendors?.[idx] : null;
+
+  // Not a list tap, but they typed something meaningful — treat it as their
+  // own restaurant choice rather than forcing them back to the tap-only list.
+  const vendor = vendorFromList
+    || (trimmed.length >= 2 ? { name: titleCase(trimmed), vicinity: 'Restaurant specified by customer' } : null);
 
   if (!vendor) {
     return {
       replies: {
         type: 'text',
-        body: `Please tap a restaurant from the list above 👆`
+        body: `Please tap a restaurant from the list above 👆, or type the name of the restaurant you'd like to order from.`
       },
       nextStage: STAGES.ORDER_SELECT_RESTAURANT,
       sessionData: { nearbyVendors: session.nearbyVendors, userLat: session.userLat, userLng: session.userLng }
@@ -862,9 +887,22 @@ async function buildReply(text, name = 'friend', session = {}) {
 
   const orderIntent = detectOrderFoodRequest(normalized);
   if (orderIntent) {
+    const namedVendor = detectVendorNameFromText(text);
+    if (namedVendor) {
+      const vendor = { name: titleCase(namedVendor), vicinity: 'Restaurant specified by customer' };
+      return {
+        replies: [
+          { type: 'text', body: `Got it — ordering ${orderIntent} from *${vendor.name}*. Here are rice meal combos, pick one:` },
+          getComboListReply()
+        ],
+        nextStage: STAGES.ORDER_SELECT_COMBO,
+        sessionData: { selectedVendor: vendor }
+      };
+    }
+
     return {
       replies: [
-        { type: 'text', body: `Got it! I can search restaurants nearby that offer ${orderIntent}. Share your location or type your area.` },
+        { type: 'text', body: `Got it! I can search restaurants nearby that offer ${orderIntent}. Share your location or type your area — or just tell me the restaurant name if you already know where you're ordering from.` },
         getLocationRequestReply()
       ],
       nextStage: STAGES.ORDER_AWAIT_LOCATION,
@@ -1038,7 +1076,7 @@ async function findNearbyVendors(latitude, longitude, mood, orderIntent) {
     const data = await response.json();
     const features = data.features || [];
 
-    return features.slice(0, 5).map((f) => {
+    return features.slice(0, 10).map((f) => {
       const p = f.properties || {};
       return {
         name: p.name || p.address_line1 || 'Unnamed restaurant',
