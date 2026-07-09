@@ -14,6 +14,12 @@ const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 const GOOGLE_CSE_ID = process.env.GOOGLE_CSE_ID;
 const GROK_API_KEY = process.env.GROK_API_KEY;
 const DEBUG = process.env.DEBUG === 'true';
+// WhatsApp number (E.164, e.g. 2348012345678) that gets notified when an order
+// comes in. NOTE: WhatsApp's Business API only allows free-form messages to a
+// number that has messaged the bot within the last 24h, or via an approved
+// template. In practice this should be a staff/admin line that has an open
+// session with the bot (or a template message — see sendOrderNotification()).
+const ORDER_NOTIFY_NUMBER = process.env.ORDER_NOTIFY_NUMBER;
 
 const imageCache = new Map();
 const sessions = new Map();
@@ -24,7 +30,12 @@ const STAGES = {
   ASK_LAST_MEAL: 'askLastMeal',
   ASK_MOOD: 'askMood',
   ASK_HEALTH_GOALS: 'askHealthGoals',
-  AWAIT_LOCATION: 'awaitLocation'
+  AWAIT_LOCATION: 'awaitLocation',
+  // Ordering flow: location -> pick a restaurant -> pick a menu item -> qty -> done.
+  ORDER_AWAIT_LOCATION: 'orderAwaitLocation',
+  ORDER_SELECT_RESTAURANT: 'orderSelectRestaurant',
+  ORDER_SELECT_ITEM: 'orderSelectItem',
+  ORDER_ENTER_QTY: 'orderEnterQty'
 };
 
 // Single source of truth for mood text -> category, replacing the old duplicated
@@ -116,6 +127,28 @@ function getSurpriseItems(count = 3) {
   return shuffled.slice(0, count);
 }
 
+// Google Places gives us real restaurants but no real per-restaurant menus, so
+// for ordering we offer this curated dish list against whichever restaurant the
+// user picks. Deduped by name and given a stable index (object literal key
+// order is preserved in JS) so 'item_<idx>' ids stay consistent between the
+// menu list message and the reply that comes back.
+const ORDER_MENU_ITEMS = (() => {
+  const seen = new Set();
+  const items = [];
+  for (const [category, categoryItems] of Object.entries(MOOD_CATALOG)) {
+    for (const item of categoryItems) {
+      if (seen.has(item.name)) continue;
+      seen.add(item.name);
+      items.push({ ...item, category });
+    }
+  }
+  return items;
+})();
+
+function getOrderMenuItemByIndex(idx) {
+  return ORDER_MENU_ITEMS[idx];
+}
+
 app.use(express.json());
 app.use('/images', express.static(path.join(__dirname, 'public/images')));
 
@@ -168,8 +201,12 @@ async function handleIncomingMessage(message, value) {
 
   if (message.type === 'location' && message.location) {
     const { latitude, longitude } = message.location;
-    const replies = await buildVendorLocationReply(latitude, longitude, session.selectedMood);
-    result = { replies, nextStage: null };
+    if (session.stage === STAGES.ORDER_AWAIT_LOCATION) {
+      result = await handleOrderLocationReceived(latitude, longitude, session);
+    } else {
+      const replies = await buildVendorLocationReply(latitude, longitude, session.selectedMood);
+      result = { replies, nextStage: null };
+    }
   } else {
     const text = message.text?.body
       || message.button?.payload
@@ -290,19 +327,56 @@ function handleCapabilities() {
   return {
     replies: {
       type: 'text',
-      body: `I help you: 🍽️ Decide what to eat based on your mood & goals 🔄 Avoid meal repetition 🏪 Find nearby vendors selling your meal 📋 Plan weekly meals (Premium) Just say you're hungry to get started!`
+      body: `I help you: 🛒 Order food from restaurants near you 🍽️ Decide what to eat based on your mood & goals 🔄 Avoid meal repetition 🏪 Find nearby vendors selling your meal 📋 Plan weekly meals (Premium) Just say you're hungry to get started!`
     },
     nextStage: null
   };
 }
 
+// "I'm hungry" now branches two ways: order straight from a nearby restaurant,
+// or go through the old mood-based recommendation flow first.
+function getHungryButtonsReply(bodyText = "Want me to help you order now, or find some recommendations first?") {
+  return {
+    type: 'interactive',
+    interactive: {
+      type: 'button',
+      body: { text: bodyText },
+      action: {
+        buttons: [
+          { type: 'reply', reply: { id: 'order_now', title: '🛒 Order now' } },
+          { type: 'reply', reply: { id: 'recommend_meals', title: '✨ Recommend meals' } }
+        ]
+      }
+    }
+  };
+}
+
 function handleHungry() {
+  return {
+    replies: getHungryButtonsReply(),
+    nextStage: null
+  };
+}
+
+function handleRecommendMeals() {
   return {
     replies: {
       type: 'text',
       body: `Hey! 😄 What did you last eat?`
     },
     nextStage: STAGES.ASK_LAST_MEAL
+  };
+}
+
+// Kicks off ordering: ask for the user's location so we can pull real nearby
+// restaurants from Google Places.
+function handleOrderNow() {
+  return {
+    replies: [
+      { type: 'text', body: `Let's get you fed 🛒 Share your location and I'll show you what's nearby.` },
+      getLocationRequestReply()
+    ],
+    nextStage: STAGES.ORDER_AWAIT_LOCATION
   };
 }
 
@@ -374,6 +448,192 @@ async function handleAwaitLocation(text, name, session) {
   return { replies, nextStage: null };
 }
 
+// Step 1 of ordering: we have coordinates, so pull nearby restaurants (name/
+// rating/vicinity only — no Place Details call yet, that's saved for the
+// restaurant the user actually picks, to keep API usage down) and let them
+// tap one from a list.
+async function handleOrderLocationReceived(latitude, longitude, session) {
+  const vendors = await findNearbyVendors(latitude, longitude);
+
+  if (!vendors || vendors.length === 0) {
+    return {
+      replies: {
+        type: 'text',
+        body: `I couldn't find restaurants near that location right now. Try sharing a different area, or type a place name like "Lekki, Lagos".`
+      },
+      nextStage: STAGES.ORDER_AWAIT_LOCATION
+    };
+  }
+
+  return {
+    replies: [
+      { type: 'text', body: `Here's what's nearby 👇 Tap a restaurant to see the menu.` },
+      getRestaurantListReply(vendors)
+    ],
+    nextStage: STAGES.ORDER_SELECT_RESTAURANT,
+    sessionData: { nearbyVendors: vendors, userLat: latitude, userLng: longitude }
+  };
+}
+
+function getRestaurantListReply(vendors, bodyText = 'Nearby restaurants') {
+  return {
+    type: 'interactive',
+    interactive: {
+      type: 'list',
+      body: { text: bodyText },
+      action: {
+        button: 'Choose',
+        sections: [
+          {
+            rows: vendors.map((v, idx) => ({
+              id: `vendor_${idx}`,
+              title: v.name.slice(0, 24),
+              description: [v.rating ? `⭐ ${v.rating}` : null, v.vicinity].filter(Boolean).join(' · ').slice(0, 72)
+            }))
+          }
+        ]
+      }
+    }
+  };
+}
+
+// Step 2: restaurant picked. We don't have that restaurant's real menu (Places
+// doesn't expose one), so we offer our curated dish list against it, grouped
+// into sections by mood category to stay under WhatsApp's list-row limits.
+function handleOrderSelectRestaurant(text, name, session) {
+  const idx = parseInt((text || '').replace('vendor_', ''), 10);
+  const vendor = Number.isInteger(idx) ? session.nearbyVendors?.[idx] : null;
+
+  if (!vendor) {
+    return {
+      replies: {
+        type: 'text',
+        body: `Please tap a restaurant from the list above 👆`
+      },
+      nextStage: STAGES.ORDER_SELECT_RESTAURANT,
+      sessionData: { nearbyVendors: session.nearbyVendors, userLat: session.userLat, userLng: session.userLng }
+    };
+  }
+
+  return {
+    replies: [
+      { type: 'text', body: `Great pick! What would you like from *${vendor.name}*?` },
+      getOrderMenuListReply()
+    ],
+    nextStage: STAGES.ORDER_SELECT_ITEM,
+    sessionData: { selectedVendor: vendor, userLat: session.userLat, userLng: session.userLng }
+  };
+}
+
+function getOrderMenuListReply(bodyText = 'Menu') {
+  const sections = {};
+  ORDER_MENU_ITEMS.forEach((item, idx) => {
+    const sectionTitle = item.category.charAt(0).toUpperCase() + item.category.slice(1);
+    if (!sections[sectionTitle]) sections[sectionTitle] = [];
+    sections[sectionTitle].push({
+      id: `item_${idx}`,
+      title: item.name.slice(0, 24),
+      description: `${item.description} — ~${item.kcal} kcal`.slice(0, 72)
+    });
+  });
+
+  return {
+    type: 'interactive',
+    interactive: {
+      type: 'list',
+      body: { text: bodyText },
+      action: {
+        button: 'Choose',
+        sections: Object.entries(sections).map(([title, rows]) => ({ title, rows }))
+      }
+    }
+  };
+}
+
+// Step 3: item picked, ask quantity as free text.
+function handleOrderSelectItem(text, name, session) {
+  const idx = parseInt((text || '').replace('item_', ''), 10);
+  const item = Number.isInteger(idx) ? getOrderMenuItemByIndex(idx) : null;
+
+  if (!item) {
+    return {
+      replies: { type: 'text', body: `Please tap an item from the menu above 👆` },
+      nextStage: STAGES.ORDER_SELECT_ITEM,
+      sessionData: { selectedVendor: session.selectedVendor, userLat: session.userLat, userLng: session.userLng }
+    };
+  }
+
+  return {
+    replies: {
+      type: 'text',
+      body: `*${item.name}* — how many would you like? (e.g. "2")`
+    },
+    nextStage: STAGES.ORDER_ENTER_QTY,
+    sessionData: { selectedVendor: session.selectedVendor, selectedItemIdx: idx, userLat: session.userLat, userLng: session.userLng }
+  };
+}
+
+// Step 4: quantity given, finalize and notify.
+async function handleOrderEnterQty(text, name, session, shortName) {
+  const item = getOrderMenuItemByIndex(session.selectedItemIdx);
+  const vendor = session.selectedVendor;
+  const parsedQty = parseInt((text || '').replace(/[^0-9]/g, ''), 10);
+  const qty = Number.isInteger(parsedQty) && parsedQty > 0 ? Math.min(parsedQty, 20) : 1;
+
+  if (!item || !vendor) {
+    // Session data got lost somehow — restart the order flow cleanly.
+    return handleOrderNow();
+  }
+
+  await sendOrderNotification({ customerName: name, item, qty, vendor });
+
+  return {
+    replies: [
+      {
+        type: 'text',
+        body: `✅ Order placed, ${shortName}!\n${qty} x *${item.name}* from *${vendor.name}*\nWe've sent your order over — they'll reach out shortly to confirm and arrange delivery/pickup.`
+      },
+      getPostVendorButtonsReply()
+    ],
+    nextStage: null
+  };
+}
+
+// Sends a plain WhatsApp text to a staff/admin number so a human can relay the
+// order to the vendor. See the ORDER_NOTIFY_NUMBER note near the top of this
+// file — WhatsApp won't let us free-form message the restaurant itself unless
+// it has an open session with this bot or we use an approved template.
+async function sendOrderNotification({ customerName, item, qty, vendor }) {
+  if (!ORDER_NOTIFY_NUMBER) {
+    console.warn('ORDER_NOTIFY_NUMBER is not configured; order was not relayed.');
+    return;
+  }
+
+  const body = `🆕 New order from ${customerName}:\n${qty} x ${item.name}\nRestaurant: ${vendor.name} (${vendor.vicinity || 'location shared'})`;
+  await sendWhatsAppMessage(ORDER_NOTIFY_NUMBER, { type: 'text', body });
+}
+
+// Same fallback pattern as handleAwaitLocation, but for the order flow: if the
+// user types a place name instead of tapping "share location", geocode it and
+// carry on to the restaurant list.
+async function handleOrderAwaitLocationText(text, name, session) {
+  const coords = await geocodeText(text);
+
+  if (!coords) {
+    const grokReply = await askGrok(text, session, { creative: true });
+    const banter = grokReply ? `${grokReply}\n\n` : `I couldn't pin that location. `;
+    return {
+      replies: {
+        type: 'text',
+        body: `${banter}📍 Tap "Share location" above, or type an area name like "Lekki, Lagos".`
+      },
+      nextStage: STAGES.ORDER_AWAIT_LOCATION
+    };
+  }
+
+  return handleOrderLocationReceived(coords.latitude, coords.longitude, session);
+}
+
 function handleMealPlanPlaceholder() {
   return {
     replies: {
@@ -388,7 +648,11 @@ const STAGE_HANDLERS = {
   [STAGES.ASK_LAST_MEAL]: handleAskLastMeal,
   [STAGES.ASK_MOOD]: handleAskMood,
   [STAGES.ASK_HEALTH_GOALS]: handleAskHealthGoals,
-  [STAGES.AWAIT_LOCATION]: handleAwaitLocation
+  [STAGES.AWAIT_LOCATION]: handleAwaitLocation,
+  [STAGES.ORDER_AWAIT_LOCATION]: handleOrderAwaitLocationText,
+  [STAGES.ORDER_SELECT_RESTAURANT]: handleOrderSelectRestaurant,
+  [STAGES.ORDER_SELECT_ITEM]: handleOrderSelectItem,
+  [STAGES.ORDER_ENTER_QTY]: handleOrderEnterQty
 };
 
 async function buildReply(text, name = 'friend', session = {}) {
@@ -398,10 +662,12 @@ async function buildReply(text, name = 'friend', session = {}) {
   if (!normalized) return handleGreeting('hello');
   if (['hi', 'hello', 'hey', 'start'].includes(normalized)) return handleGreeting(text);
 
-  // Quick-reply buttons shown after vendor recommendations.
+  // Quick-reply buttons shown after vendor recommendations / the hungry prompt.
   if (normalized === 'start_over') return handleGreeting("let's start over");
   if (normalized === 'try_different_meals') return handleHungry();
   if (normalized === 'get_meal_plan') return handleMealPlanPlaceholder();
+  if (normalized === 'order_now') return handleOrderNow();
+  if (normalized === 'recommend_meals') return handleRecommendMeals();
 
   if (
     normalized.includes('what can you do')
