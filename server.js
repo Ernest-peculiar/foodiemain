@@ -408,13 +408,12 @@ function getGreetingButtonsReply(bodyText = 'Or tap an option below 👇') {
 }
 
 async function handleGreeting(seedText = 'hello') {
-  // Grok writes the actual greeting so it doesn't feel like the same canned
-  // line every time — falls back to the static line if Grok's unavailable.
   const grokReply = await askGrok(seedText, {}, { creative: true });
 
   return {
     replies: [
-      { type: 'text', body: grokReply || STATIC_GREETING },
+      { type: 'text', body: STATIC_GREETING },
+      { type: 'text', body: grokReply || `I'm here to help you order food, find nearby restaurants, or get meal ideas.` },
       getGreetingButtonsReply()
     ],
     nextStage: null
@@ -543,7 +542,7 @@ async function handleAwaitLocation(text, name, session) {
     };
   }
 
-  const replies = await buildVendorLocationReply(coords.latitude, coords.longitude, session.selectedMood);
+  const replies = await buildVendorLocationReply(coords.latitude, coords.longitude, session.selectedMood, session.orderIntent);
   return { replies, nextStage: null };
 }
 
@@ -552,7 +551,7 @@ async function handleAwaitLocation(text, name, session) {
 // restaurant the user actually picks, to keep API usage down) and let them
 // tap one from a list.
 async function handleOrderLocationReceived(latitude, longitude, session) {
-  const vendors = await findNearbyVendors(latitude, longitude);
+  const vendors = await findNearbyVendors(latitude, longitude, session.selectedMood, session.orderIntent);
 
   if (!vendors || vendors.length === 0) {
     return {
@@ -809,7 +808,8 @@ async function handleOrderAwaitLocationText(text, name, session) {
         type: 'text',
         body: `${banter}📍 Tap "Share location" above, or type an area name like "Lekki, Lagos".`
       },
-      nextStage: STAGES.ORDER_AWAIT_LOCATION
+      nextStage: STAGES.ORDER_AWAIT_LOCATION,
+      sessionData: { orderIntent: session.orderIntent }
     };
   }
 
@@ -1153,8 +1153,8 @@ async function geocodeText(query) {
 // Builds the rDSJDSDJeply once we have real coordinates: one card-style text message
 // per vendor (status, service type, rating, distance — mirrors the mockup),
 // then a location pin per vendor, then the follow-up action buttons.
-async function buildVendorLocationReply(latitude, longitude, mood) {
-  const vendors = await findNearbyVendors(latitude, longitude, mood, mood ? session.orderIntent : session.orderIntent, session.orderIntent);
+async function buildVendorLocationReply(latitude, longitude, mood, orderIntent) {
+  const vendors = await findNearbyVendors(latitude, longitude, mood, orderIntent);
 
   if (!vendors || vendors.length === 0) {
     return [
