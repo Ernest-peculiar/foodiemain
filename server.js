@@ -458,7 +458,7 @@ async function buildMoodReply(category, shortName, lastMeal) {
       },
       {
         type: 'image',
-        imageUrl: 'https://images.unsplash.com/photo-1551632786-de41ec16a01d?w=500',
+        imageUrl: 'https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSE5UD25IlDZA5bFrhFNlm8rZlMVI2Zu9zo5obekKmfOg&s=10',
         caption: `🎉 Surprise option: jollof rice with fried plantain and peppered fish.`
       }
     ];
