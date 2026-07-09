@@ -410,7 +410,7 @@ function getGreetingButtonsReply(bodyText = 'Or tap an option below 👇') {
       body: { text: bodyText },
       action: {
         buttons: [
-          { type: 'reply', reply: { id: 'hungry', title: "I'm hungry" } },
+          { type: 'reply', reply: { id: 'hungry', title: "Order now" } },
           { type: 'reply', reply: { id: 'help', title: 'What can you do?' } }
         ]
       }
