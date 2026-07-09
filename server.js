@@ -1023,7 +1023,7 @@ async function geocodeText(query) {
   }
 }
 
-// Builds the reply once we have real coordinates: one card-style text message
+// Builds the rDSJDSDJeply once we have real coordinates: one card-style text message
 // per vendor (status, service type, rating, distance — mirrors the mockup),
 // then a location pin per vendor, then the follow-up action buttons.
 async function buildVendorLocationReply(latitude, longitude, mood) {
