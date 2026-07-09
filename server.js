@@ -13,6 +13,7 @@ const WHATSAPP_API_VERSION = process.env.WHATSAPP_API_VERSION || 'v22.0';
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 const GOOGLE_CSE_ID = process.env.GOOGLE_CSE_ID;
 const GROK_API_KEY = process.env.GROK_API_KEY;
+const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
 const DEBUG = process.env.DEBUG === 'true';
 // WhatsApp number (E.164, e.g. 2348012345678) that gets notified when an order
 // comes in. NOTE: WhatsApp's Business API only allows free-form messages to a
@@ -34,7 +35,8 @@ const STAGES = {
   // Ordering flow: location -> pick a restaurant -> pick a menu item -> qty -> done.
   ORDER_AWAIT_LOCATION: 'orderAwaitLocation',
   ORDER_SELECT_RESTAURANT: 'orderSelectRestaurant',
-  ORDER_SELECT_ITEM: 'orderSelectItem',
+  ORDER_SELECT_COMBO: 'orderSelectCombo',
+  ORDER_AWAIT_PAYMENT: 'orderAwaitPayment',
   ORDER_ENTER_QTY: 'orderEnterQty'
 };
 
@@ -147,6 +149,34 @@ const ORDER_MENU_ITEMS = (() => {
 
 function getOrderMenuItemByIndex(idx) {
   return ORDER_MENU_ITEMS[idx];
+}
+
+const ORDER_COMBOS = [
+  { title: 'Plain Rice', description: 'Steamed rice with tomato stew and salad', category: 'Rice', price: 1500 },
+  { title: 'Rice & Beans', description: 'Rice served with beans and plantain', category: 'Rice & Beans', price: 1700 },
+  { title: 'Rice & Meat', description: 'Rice with chicken stew and a side of greens', category: 'Rice & Meat', price: 2200 },
+  { title: 'Rice, Meat & Fanta', description: 'Rice, meat stew, and Fanta to wash it down', category: 'Rice Combos', price: 2800 }
+];
+
+function parseEmail(text) {
+  const match = (text || '').match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  return match ? match[0] : null;
+}
+
+function detectOrderFoodRequest(text) {
+  if (!text.includes('order')) return null;
+  const riceMatch = /\brice\b/.test(text);
+  const beansMatch = /\bbeans?\b|\bbeands?\b/.test(text);
+  const jollofMatch = /\bjollof\b/.test(text);
+
+  const items = [];
+  if (riceMatch) items.push('rice');
+  if (beansMatch) items.push('beans');
+  if (jollofMatch) items.push('jollof');
+
+  if (items.length > 0) return items.join(' and ');
+  const match = text.match(/order\s+(.*)/i);
+  return match ? match[1].trim() : null;
 }
 
 // Curated restaurant list for the AE-FUNAI / Abakaliki area. We hardcode this
@@ -586,11 +616,57 @@ function handleOrderSelectRestaurant(text, name, session) {
 
   return {
     replies: [
-      { type: 'text', body: `Great pick! What would you like from *${vendor.name}*?` },
-      getOrderMenuListReply()
+      { type: 'text', body: `Great pick! I found rice and rice-combo meals for *${vendor.name}*. Pick one:` },
+      getComboListReply()
     ],
-    nextStage: STAGES.ORDER_SELECT_ITEM,
+    nextStage: STAGES.ORDER_SELECT_COMBO,
     sessionData: { selectedVendor: vendor, userLat: session.userLat, userLng: session.userLng }
+  };
+}
+
+function getComboListReply(bodyText = 'Rice meal combos available') {
+  return {
+    type: 'interactive',
+    interactive: {
+      type: 'list',
+      body: { text: bodyText },
+      action: {
+        button: 'Choose',
+        sections: [
+          {
+            title: 'Rice Combos',
+            rows: ORDER_COMBOS.map((combo, idx) => ({
+              id: `combo_${idx}`,
+              title: combo.title.slice(0, 24),
+              description: `${combo.description} — ₦${combo.price}`.slice(0, 72)
+            }))
+          }
+        ]
+      }
+    }
+  };
+}
+
+// Step 3: combo picked, ask quantity as free text.
+function handleOrderSelectCombo(text, name, session) {
+  const idx = parseInt((text || '').replace('combo_', ''), 10);
+  const combo = Number.isInteger(idx) ? ORDER_COMBOS[idx] : null;
+
+  if (!combo) {
+    return {
+      replies: { type: 'text', body: `Please tap a meal combo from the list above 👆` },
+      nextStage: STAGES.ORDER_SELECT_COMBO,
+      sessionData: { selectedVendor: session.selectedVendor, userLat: session.userLat, userLng: session.userLng }
+    };
+  }
+
+  return {
+    replies: {
+      type: 'text',
+      body: `*${combo.title}* is a great choice! How many would you like? (e.g. "2")`
+    },
+    nextStage: STAGES.ORDER_ENTER_QTY,
+    sessionData: { selectedVendor: session.selectedVendor, selectedComboIdx: idx, userLat: session.userLat, userLng: session.userLng }
   };
 }
 
@@ -619,8 +695,38 @@ function getOrderMenuListReply(bodyText = 'Menu') {
   };
 }
 
-// Step 3: item picked, ask quantity as free text.
-function handleOrderSelectItem(text, name, session) {
+function getRoundedAmount(amount) {
+  return Math.round(amount * 100);
+}
+
+async function createPaystackTransaction(email, amount) {
+  if (!PAYSTACK_SECRET_KEY) return null;
+
+  try {
+    const response = await fetch('https://api.paystack.co/transaction/initialize', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${PAYSTACK_SECRET_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        email,
+        amount: getRoundedAmount(amount),
+        currency: 'NGN',
+        callback_url: `${PUBLIC_URL}/paystack/callback`
+      })
+    });
+
+    if (!response.ok) return null;
+    const data = await response.json();
+
+    if (data.status && data.data) return data.data;
+    return null;
+  } catch (error) {
+    console.error('Paystack initialize failed:', error);
+    return null;
+  }
+}
   const idx = parseInt((text || '').replace('item_', ''), 10);
   const item = Number.isInteger(idx) ? getOrderMenuItemByIndex(idx) : null;
 
@@ -640,27 +746,34 @@ function handleOrderSelectItem(text, name, session) {
     nextStage: STAGES.ORDER_ENTER_QTY,
     sessionData: { selectedVendor: session.selectedVendor, selectedItemIdx: idx, userLat: session.userLat, userLng: session.userLng }
   };
-}
+
 
 // Step 4: quantity given, finalize and notify.
 async function handleOrderEnterQty(text, name, session, shortName) {
-  const item = getOrderMenuItemByIndex(session.selectedItemIdx);
+  const combo = ORDER_COMBOS[session.selectedComboIdx];
   const vendor = session.selectedVendor;
   const parsedQty = parseInt((text || '').replace(/[^0-9]/g, ''), 10);
   const qty = Number.isInteger(parsedQty) && parsedQty > 0 ? Math.min(parsedQty, 20) : 1;
 
-  if (!item || !vendor) {
+  if (!combo || !vendor) {
     // Session data got lost somehow — restart the order flow cleanly.
     return handleOrderNow();
   }
 
-  await sendOrderNotification({ customerName: name, item, qty, vendor });
+  const email = parseEmail(text) || `${name.replace(/\s+/g, '.').toLowerCase()}@example.com`;
+  const payment = await createPaystackTransaction(email, combo.price * qty);
+
+  const paymentMessage = payment
+    ? `Please complete payment here: ${payment.authorization_url}`
+    : `I couldn't create the payment link right now. Please try again later or contact support.`;
+
+  await sendOrderNotification({ customerName: name, item: combo, qty, vendor, paymentUrl: payment?.authorization_url });
 
   return {
     replies: [
       {
         type: 'text',
-        body: `✅ Order placed, ${shortName}!\n${qty} x *${item.name}* from *${vendor.name}*\nWe've sent your order over — they'll reach out shortly to confirm and arrange delivery/pickup.`
+        body: `✅ Almost done, ${shortName}!\n${qty} x *${combo.title}* from *${vendor.name}*\nTotal: ₦${combo.price * qty}\n${paymentMessage}`
       },
       getPostVendorButtonsReply()
     ],
@@ -672,13 +785,13 @@ async function handleOrderEnterQty(text, name, session, shortName) {
 // order to the vendor. See the ORDER_NOTIFY_NUMBER note near the top of this
 // file — WhatsApp won't let us free-form message the restaurant itself unless
 // it has an open session with this bot or we use an approved template.
-async function sendOrderNotification({ customerName, item, qty, vendor }) {
+async function sendOrderNotification({ customerName, item, qty, vendor, paymentUrl }) {
   if (!ORDER_NOTIFY_NUMBER) {
     console.warn('ORDER_NOTIFY_NUMBER is not configured; order was not relayed.');
     return;
   }
 
-  const body = `🆕 New order from ${customerName}:\n${qty} x ${item.name}\nRestaurant: ${vendor.name} (${vendor.vicinity || 'location shared'})`;
+  const body = `🆕 New order from ${customerName}:\n${qty} x ${item.title || item.name}\nRestaurant: ${vendor.name} (${vendor.vicinity || 'location shared'})${paymentUrl ? `\nPayment: ${paymentUrl}` : ''}`;
   await sendWhatsAppMessage(ORDER_NOTIFY_NUMBER, { type: 'text', body });
 }
 
@@ -719,8 +832,8 @@ const STAGE_HANDLERS = {
   [STAGES.ASK_HEALTH_GOALS]: handleAskHealthGoals,
   [STAGES.AWAIT_LOCATION]: handleAwaitLocation,
   [STAGES.ORDER_AWAIT_LOCATION]: handleOrderAwaitLocationText,
-  [STAGES.ORDER_SELECT_RESTAURANT]: handleOrderSelectRestaurant,
-  [STAGES.ORDER_SELECT_ITEM]: handleOrderSelectItem,
+    [STAGES.ORDER_SELECT_RESTAURANT]: handleOrderSelectRestaurant,
+  [STAGES.ORDER_SELECT_COMBO]: handleOrderSelectCombo,
   [STAGES.ORDER_ENTER_QTY]: handleOrderEnterQty
 };
 
@@ -748,6 +861,18 @@ async function buildReply(text, name = 'friend', session = {}) {
   }
 
   if (normalized.includes('hungry')) return handleHungry();
+
+  const orderIntent = detectOrderFoodRequest(normalized);
+  if (orderIntent) {
+    return {
+      replies: [
+        { type: 'text', body: `Got it! I can search restaurants nearby that offer ${orderIntent}. Share your location or type your area.` },
+        getLocationRequestReply()
+      ],
+      nextStage: STAGES.ORDER_AWAIT_LOCATION,
+      sessionData: { orderIntent }
+    };
+  }
 
   const handler = STAGE_HANDLERS[session.stage];
   if (handler) return handler(text, name, session, shortName);
@@ -886,13 +1011,15 @@ async function resolveImageUrl(item) {
 // Requires the Places API (New or legacy Nearby Search) enabled on GOOGLE_API_KEY —
 // this is a separate API from the Custom Search JSON API used for images, so it
 // needs enabling separately in Google Cloud Console.
-async function findNearbyVendors(latitude, longitude, mood) {
+async function findNearbyVendors(latitude, longitude, mood, orderIntent) {
   if (!GOOGLE_API_KEY) {
     console.warn('Google API key is not configured; cannot look up nearby vendors.');
     return null;
   }
 
-  const keyword = mood ? `${mood} Nigerian food` : 'Nigerian food';
+  let keyword = 'Nigerian food';
+  if (orderIntent) keyword = `${orderIntent} Nigerian food`;
+  else if (mood) keyword = `${mood} Nigerian food`;
 
   try {
     const url = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${latitude},${longitude}&radius=5000&type=restaurant&keyword=${encodeURIComponent(keyword)}&key=${encodeURIComponent(GOOGLE_API_KEY)}`;
@@ -1027,7 +1154,7 @@ async function geocodeText(query) {
 // per vendor (status, service type, rating, distance — mirrors the mockup),
 // then a location pin per vendor, then the follow-up action buttons.
 async function buildVendorLocationReply(latitude, longitude, mood) {
-  const vendors = await findNearbyVendors(latitude, longitude, mood);
+  const vendors = await findNearbyVendors(latitude, longitude, mood, mood ? session.orderIntent : session.orderIntent, session.orderIntent);
 
   if (!vendors || vendors.length === 0) {
     return [
