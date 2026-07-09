@@ -176,15 +176,15 @@ async function buildReply(text, name = 'friend', session = {}) {
 
   // Stage: Ask what they last ate
   if (session.stage === 'askLastMeal') {
-    return {
-      replies: {
-        type: 'text',
-        body: `Got it! What are you in the mood for?`
-      },
-      nextStage: 'askMood',
-      sessionData: { lastMeal: text.trim() }
-    };
-  }
+  return {
+    replies: [
+      { type: 'text', body: `Got it! What are you in the mood for?` },
+      getMoodButtonsReply()
+    ],
+    nextStage: 'askMood',
+    sessionData: { lastMeal: text.trim() }
+  };
+}
 
   // Stage: Ask mood/preference
   if (session.stage === 'askMood') {
