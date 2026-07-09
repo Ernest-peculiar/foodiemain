@@ -418,12 +418,13 @@ function getGreetingButtonsReply(bodyText = 'Or tap an option below 👇') {
   };
 }
 
-async function handleGreeting(seedText = 'hello') {
+async function handleGreeting(seedText = 'hello', name = 'friend') {
   const grokReply = await askGrok(seedText, {}, { creative: true });
+  const greetingText = `Hi ${name}, I'm *Foodie* — your personal Nigerian food guide. Tell me what you'd like to eat and I'll handle the rest!`;
 
   return {
     replies: [
-      { type: 'text', body: STATIC_GREETING },
+      { type: 'text', body: greetingText },
       { type: 'text', body: grokReply || `I'm here to help you order food, find nearby restaurants, or get meal ideas.` },
       getGreetingButtonsReply()
     ],
@@ -837,11 +838,11 @@ async function buildReply(text, name = 'friend', session = {}) {
   const normalized = text.trim().toLowerCase();
   const shortName = name.split(' ')[0] || 'friend';
 
-  if (!normalized) return handleGreeting('hello');
-  if (['hi', 'hello', 'hey', 'start'].includes(normalized)) return handleGreeting(text);
+  if (!normalized) return handleGreeting('hello', shortName);
+  if (['hi', 'hello', 'hey', 'start'].includes(normalized)) return handleGreeting(text, shortName);
 
   // Quick-reply buttons shown after vendor recommendations / the hungry prompt.
-  if (normalized === 'start_over') return handleGreeting("let's start over");
+  if (normalized === 'start_over') return handleGreeting("let's start over", shortName);
   if (normalized === 'try_different_meals') return handleHungry();
   if (normalized === 'get_meal_plan') return handleMealPlanPlaceholder();
   if (normalized === 'order_now') return handleOrderNow();
