@@ -32,12 +32,14 @@ const STAGES = {
   ASK_MOOD: 'askMood',
   ASK_HEALTH_GOALS: 'askHealthGoals',
   AWAIT_LOCATION: 'awaitLocation',
-  // Ordering flow: location -> pick a restaurant -> pick a menu item -> qty -> done.
+  // Ordering flow: location -> pick a restaurant -> pick a menu item -> qty -> address -> payment.
   ORDER_AWAIT_LOCATION: 'orderAwaitLocation',
   ORDER_SELECT_RESTAURANT: 'orderSelectRestaurant',
   ORDER_SELECT_COMBO: 'orderSelectCombo',
-  ORDER_AWAIT_PAYMENT: 'orderAwaitPayment',
-  ORDER_ENTER_QTY: 'orderEnterQty'
+  ORDER_ENTER_QTY: 'orderEnterQty',
+  // New: exact delivery address must be collected before we ever generate a
+  // Paystack payment link, so a rider actually has somewhere to deliver to.
+  ORDER_AWAIT_ADDRESS: 'orderAwaitAddress'
 };
 
 // Single source of truth for mood text -> category, replacing the old duplicated
@@ -744,8 +746,10 @@ async function createPaystackTransaction(email, amount) {
   }
 }
 
-// Step 4: quantity given, finalize and notify.
-async function handleOrderEnterQty(text, name, session, shortName) {
+// Step 4: quantity given. We do NOT create a Paystack link yet — we still need
+// an exact delivery address, so stash the qty on the session and move to the
+// address step instead of paying here.
+function handleOrderEnterQty(text, name, session, shortName) {
   const combo = ORDER_COMBOS[session.selectedComboIdx];
   const vendor = session.selectedVendor;
   const parsedQty = parseInt((text || '').replace(/[^0-9]/g, ''), 10);
@@ -756,6 +760,69 @@ async function handleOrderEnterQty(text, name, session, shortName) {
     return handleOrderNow();
   }
 
+  return {
+    replies: {
+      type: 'text',
+      body: `Almost there, ${shortName}! 📍 Please type your *exact delivery address* — street name, house number or a nearby landmark, and the area (e.g. "12 Ogoja Rd, opposite GTBank, Abakaliki"). I won't generate the payment link until I have this.`
+    },
+    nextStage: STAGES.ORDER_AWAIT_ADDRESS,
+    sessionData: {
+      selectedVendor: vendor,
+      selectedComboIdx: session.selectedComboIdx,
+      qty,
+      userLat: session.userLat,
+      userLng: session.userLng
+    }
+  };
+}
+
+// Very light heuristic to nudge users toward a genuinely useful address rather
+// than a one-word non-answer ("ok", "yes", "here") — this is not real address
+// validation (no geocoding call), just a sanity floor before we bother
+// generating a payment link and dispatching an order to staff.
+function isLikelyValidAddress(text) {
+  const trimmed = (text || '').trim();
+  if (trimmed.length < 10) return false;
+
+  const wordCount = trimmed.split(/\s+/).filter(Boolean).length;
+  if (wordCount < 3) return false;
+
+  const rejectPhrases = ['ok', 'okay', 'yes', 'no', 'sure', 'done', 'here', "i don't know", 'idk', 'na', 'nil'];
+  if (rejectPhrases.includes(trimmed.toLowerCase())) return false;
+
+  return true;
+}
+
+// Step 5: exact delivery address given. Only now do we talk to Paystack and
+// notify staff — this is the payment gate the user asked for.
+async function handleOrderAwaitAddress(text, name, session, shortName) {
+  const combo = ORDER_COMBOS[session.selectedComboIdx];
+  const vendor = session.selectedVendor;
+  const qty = session.qty;
+
+  if (!combo || !vendor || !qty) {
+    // Session data got lost somehow — restart the order flow cleanly.
+    return handleOrderNow();
+  }
+
+  if (!isLikelyValidAddress(text)) {
+    return {
+      replies: {
+        type: 'text',
+        body: `That doesn't look like a full address yet 🙏 Please include the street name, house number or a nearby landmark, and the area — e.g. "12 Ogoja Rd, opposite GTBank, Abakaliki".`
+      },
+      nextStage: STAGES.ORDER_AWAIT_ADDRESS,
+      sessionData: {
+        selectedVendor: vendor,
+        selectedComboIdx: session.selectedComboIdx,
+        qty,
+        userLat: session.userLat,
+        userLng: session.userLng
+      }
+    };
+  }
+
+  const address = text.trim();
   const email = parseEmail(text) || `${name.replace(/\s+/g, '.').toLowerCase()}@example.com`;
   const payment = await createPaystackTransaction(email, combo.price * qty);
 
@@ -763,13 +830,13 @@ async function handleOrderEnterQty(text, name, session, shortName) {
     ? `Please complete payment here: ${payment.authorization_url}`
     : `I couldn't create the payment link right now. Please try again later or contact support.`;
 
-  await sendOrderNotification({ customerName: name, item: combo, qty, vendor, paymentUrl: payment?.authorization_url });
+  await sendOrderNotification({ customerName: name, item: combo, qty, vendor, address, paymentUrl: payment?.authorization_url });
 
   return {
     replies: [
       {
         type: 'text',
-        body: `✅ Almost done, ${shortName}!\n${qty} x *${combo.title}* from *${vendor.name}*\nTotal: ₦${combo.price * qty}\n${paymentMessage}`
+        body: `✅ Almost done, ${shortName}!\n${qty} x *${combo.title}* from *${vendor.name}*\nDeliver to: ${address}\nTotal: ₦${combo.price * qty}\n${paymentMessage}`
       },
       getPostVendorButtonsReply()
     ],
@@ -781,13 +848,13 @@ async function handleOrderEnterQty(text, name, session, shortName) {
 // order to the vendor. See the ORDER_NOTIFY_NUMBER note near the top of this
 // file — WhatsApp won't let us free-form message the restaurant itself unless
 // it has an open session with this bot or we use an approved template.
-async function sendOrderNotification({ customerName, item, qty, vendor, paymentUrl }) {
+async function sendOrderNotification({ customerName, item, qty, vendor, address, paymentUrl }) {
   if (!ORDER_NOTIFY_NUMBER) {
     console.warn('ORDER_NOTIFY_NUMBER is not configured; order was not relayed.');
     return;
   }
 
-  const body = `🆕 New order from ${customerName}:\n${qty} x ${item.title || item.name}\nRestaurant: ${vendor.name} (${vendor.vicinity || 'location shared'})${paymentUrl ? `\nPayment: ${paymentUrl}` : ''}`;
+  const body = `🆕 New order from ${customerName}:\n${qty} x ${item.title || item.name}\nRestaurant: ${vendor.name} (${vendor.vicinity || 'location shared'})${address ? `\nDeliver to: ${address}` : ''}${paymentUrl ? `\nPayment: ${paymentUrl}` : ''}`;
   await sendWhatsAppMessage(ORDER_NOTIFY_NUMBER, { type: 'text', body });
 }
 
@@ -829,9 +896,10 @@ const STAGE_HANDLERS = {
   [STAGES.ASK_HEALTH_GOALS]: handleAskHealthGoals,
   [STAGES.AWAIT_LOCATION]: handleAwaitLocation,
   [STAGES.ORDER_AWAIT_LOCATION]: handleOrderAwaitLocationText,
-    [STAGES.ORDER_SELECT_RESTAURANT]: handleOrderSelectRestaurant,
+  [STAGES.ORDER_SELECT_RESTAURANT]: handleOrderSelectRestaurant,
   [STAGES.ORDER_SELECT_COMBO]: handleOrderSelectCombo,
-  [STAGES.ORDER_ENTER_QTY]: handleOrderEnterQty
+  [STAGES.ORDER_ENTER_QTY]: handleOrderEnterQty,
+  [STAGES.ORDER_AWAIT_ADDRESS]: handleOrderAwaitAddress
 };
 
 async function buildReply(text, name = 'friend', session = {}) {
@@ -1160,7 +1228,7 @@ async function geocodeText(query) {
   }
 }
 
-// Builds the rDSJDSDJeply once we have real coordinates: one card-style text message
+// Builds the reply once we have real coordinates: one card-style text message
 // per vendor (status, service type, rating, distance — mirrors the mockup),
 // then a location pin per vendor, then the follow-up action buttons.
 async function buildVendorLocationReply(latitude, longitude, mood, orderIntent) {
