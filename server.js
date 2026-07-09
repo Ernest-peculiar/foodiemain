@@ -370,7 +370,7 @@ async function askGrok(userMessage, sessionData = {}, { creative = false } = {})
         'Authorization': `Bearer ${GROK_API_KEY}`
       },
       body: JSON.stringify({
-        model: 'grok-beta',
+        model: process.env.GROK_MODEL || 'grok',
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userMessage }
@@ -570,17 +570,22 @@ async function handleOrderLocationReceived(latitude, longitude, session) {
         type: 'text',
         body: `I couldn't find restaurants near that location right now. Try sharing a different area, or type a place name like "Lekki, Lagos".`
       },
-      nextStage: STAGES.ORDER_AWAIT_LOCATION
+      nextStage: STAGES.ORDER_AWAIT_LOCATION,
+      sessionData: { orderIntent: session.orderIntent }
     };
   }
 
+  const replyText = session.orderIntent
+    ? `Here's what's nearby that can serve ${session.orderIntent} 👇 Tap a restaurant to choose.`
+    : `Here's what's nearby 👇 Tap a restaurant to choose.`;
+
   return {
     replies: [
-      { type: 'text', body: `Here's what's nearby 👇 Tap a restaurant to see the menu.` },
+      { type: 'text', body: replyText },
       getRestaurantListReply(vendors)
     ],
     nextStage: STAGES.ORDER_SELECT_RESTAURANT,
-    sessionData: { nearbyVendors: vendors, userLat: latitude, userLng: longitude }
+    sessionData: { nearbyVendors: vendors, userLat: latitude, userLng: longitude, orderIntent: session.orderIntent }
   };
 }
 
@@ -1013,11 +1018,24 @@ async function findNearbyVendors(latitude, longitude, mood, orderIntent) {
   else if (mood) keyword = `${mood} Nigerian food`;
 
   try {
-    const url = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${latitude},${longitude}&radius=5000&type=restaurant&keyword=${encodeURIComponent(keyword)}&key=${encodeURIComponent(GOOGLE_API_KEY)}`;
-    const response = await fetch(url);
+    const baseUrl = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${latitude},${longitude}&radius=5000&type=restaurant&key=${encodeURIComponent(GOOGLE_API_KEY)}`;
+    const keywordUrl = `${baseUrl}&keyword=${encodeURIComponent(keyword)}`;
+
+    let response = await fetch(keywordUrl);
     if (!response.ok) return null;
-    const data = await response.json();
-    return (data.results || []).slice(0, 5);
+
+    let data = await response.json();
+    let results = (data.results || []).slice(0, 5);
+
+    if (results.length === 0 && (orderIntent || mood)) {
+      // Fallback to a less restrictive search if keyword filtering returns nothing.
+      response = await fetch(baseUrl);
+      if (!response.ok) return null;
+      data = await response.json();
+      results = (data.results || []).slice(0, 5);
+    }
+
+    return results;
   } catch (error) {
     console.error('Places nearby search failed:', error);
     return null;
