@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const path = require('path');
+const fs = require('fs');
 const app = express();
 
 const PORT = process.env.PORT || 3000;
@@ -65,39 +66,39 @@ function mapMoodToCategory(userMoodText, fallback = 'light') {
 // render actual colored badges — this is the closest text approximation.
 const MOOD_CATALOG = {
   light: [
-    { name: 'Moi Moi & Pap', description: 'Steamed bean pudding with fermented corn porridge', tags: ['Healthy', 'Light', 'Affordable'], kcal: 280, searchQuery: 'Nigerian moi moi pap', fallbackImageUrl: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=500' },
-    { name: 'Akara & Fried Plantain', description: 'Crispy bean fritters with sweet fried plantain', tags: ['Light', 'Affordable'], kcal: 310, searchQuery: 'Nigerian akara plantain', fallbackImageUrl: 'https://images.unsplash.com/photo-1585238341710-4913d3ca7cc0?w=500' },
-    { name: 'Grilled Fish Salad', description: 'Grilled fish over a fresh salad with light Nigerian flavors', tags: ['Light', 'Healthy'], kcal: 340, searchQuery: 'grilled fish salad bowl', fallbackImageUrl: 'https://images.unsplash.com/photo-1540189549336-e6e99c3679fe?w=500' },
-    { name: 'Steamed Veg & Lean Protein', description: 'Steamed vegetables with a lean protein of choice', tags: ['Healthy', 'Light'], kcal: 320, searchQuery: 'steamed vegetables lean protein plate', fallbackImageUrl: 'https://images.unsplash.com/photo-1512621776951-a57141f2eefd?w=500' },
-    { name: 'Fruit & Nut Bowl', description: 'Fresh fruit and nut bowl with a ginger syrup drizzle', tags: ['Light', 'Healthy'], kcal: 250, searchQuery: 'fruit nut bowl ginger', fallbackImageUrl: 'https://images.unsplash.com/photo-1599599810694-b5ac1ea27830?w=500' }
+    { name: 'Moi Moi & Pap', description: 'Steamed bean pudding with fermented corn porridge', tags: ['Healthy', 'Light', 'Affordable'], kcal: 280, localImage: 'moi-moi-pap.jpg', searchQuery: 'Nigerian moi moi pap', fallbackImageUrl: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=500' },
+    { name: 'Akara & Fried Plantain', description: 'Crispy bean fritters with sweet fried plantain', tags: ['Light', 'Affordable'], kcal: 310, localImage: 'akara-plantain.jpg', searchQuery: 'Nigerian akara plantain', fallbackImageUrl: 'https://images.unsplash.com/photo-1585238341710-4913d3ca7cc0?w=500' },
+    { name: 'Grilled Fish Salad', description: 'Grilled fish over a fresh salad with light Nigerian flavors', tags: ['Light', 'Healthy'], kcal: 340, localImage: 'grilled-fish-salad.jpg', searchQuery: 'grilled fish salad bowl', fallbackImageUrl: 'https://images.unsplash.com/photo-1540189549336-e6e99c3679fe?w=500' },
+    { name: 'Steamed Veg & Lean Protein', description: 'Steamed vegetables with a lean protein of choice', tags: ['Healthy', 'Light'], kcal: 320, localImage: 'steamed-veg-protein.jpg', searchQuery: 'steamed vegetables lean protein plate', fallbackImageUrl: 'https://images.unsplash.com/photo-1512621776951-a57141f2eefd?w=500' },
+    { name: 'Fruit & Nut Bowl', description: 'Fresh fruit and nut bowl with a ginger syrup drizzle', tags: ['Light', 'Healthy'], kcal: 250, localImage: 'fruit-nut-bowl.jpg', searchQuery: 'fruit nut bowl ginger', fallbackImageUrl: 'https://images.unsplash.com/photo-1599599810694-b5ac1ea27830?w=500' }
   ],
   heavy: [
-    { name: 'Pounded Yam & Egusi', description: 'Rich, comforting egusi soup with pounded yam', tags: ['Heavy', 'Filling'], kcal: 750, searchQuery: 'pounded yam egusi soup', fallbackImageUrl: 'https://images.unsplash.com/photo-1645112411341-6c4ee36b2e5d?w=500' },
-    { name: 'Oha Soup & Fufu', description: 'Wholesome oha soup with fufu and deep, savory flavor', tags: ['Heavy', 'Filling'], kcal: 700, searchQuery: 'oha soup fufu Nigerian', fallbackImageUrl: 'https://images.unsplash.com/photo-1604909052743-94e838986d24?w=500' },
-    { name: 'Ogbono & Eba', description: 'Thick ogbono soup with eba — very satisfying', tags: ['Heavy'], kcal: 680, searchQuery: 'ogbono soup eba Nigerian', fallbackImageUrl: 'https://images.unsplash.com/photo-1631515243349-e0cb75fb8d3a?w=500' },
-    { name: 'Fried Rice & Chicken Stew', description: 'Loaded fried rice served with chicken stew', tags: ['Heavy', 'Filling'], kcal: 620, searchQuery: 'Nigerian fried rice chicken stew', fallbackImageUrl: 'https://images.unsplash.com/photo-1551632786-de41ec16a01d?w=500' },
-    { name: 'Suya Platter', description: 'Bold, hearty suya platter with spicy beef', tags: ['Heavy', 'Spicy'], kcal: 590, searchQuery: 'suya beef skewers platter', fallbackImageUrl: 'https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=500' }
+    { name: 'Pounded Yam & Egusi', description: 'Rich, comforting egusi soup with pounded yam', tags: ['Heavy', 'Filling'], kcal: 750, localImage: 'pounded-yam-egusi.jpg', searchQuery: 'pounded yam egusi soup', fallbackImageUrl: 'https://images.unsplash.com/photo-1645112411341-6c4ee36b2e5d?w=500' },
+    { name: 'Oha Soup & Fufu', description: 'Wholesome oha soup with fufu and deep, savory flavor', tags: ['Heavy', 'Filling'], kcal: 700, localImage: 'oha-soup-fufu.jpg', searchQuery: 'oha soup fufu Nigerian', fallbackImageUrl: 'https://images.unsplash.com/photo-1604909052743-94e838986d24?w=500' },
+    { name: 'Ogbono & Eba', description: 'Thick ogbono soup with eba — very satisfying', tags: ['Heavy'], kcal: 680, localImage: 'ogbono-eba.jpg', searchQuery: 'ogbono soup eba Nigerian', fallbackImageUrl: 'https://images.unsplash.com/photo-1631515243349-e0cb75fb8d3a?w=500' },
+    { name: 'Fried Rice & Chicken Stew', description: 'Loaded fried rice served with chicken stew', tags: ['Heavy', 'Filling'], kcal: 620, localImage: 'fried-rice-chicken-stew.jpg', searchQuery: 'Nigerian fried rice chicken stew', fallbackImageUrl: 'https://images.unsplash.com/photo-1551632786-de41ec16a01d?w=500' },
+    { name: 'Suya Platter', description: 'Bold, hearty suya platter with spicy beef', tags: ['Heavy', 'Spicy'], kcal: 590, localImage: 'suya-platter.jpg', searchQuery: 'suya beef skewers platter', fallbackImageUrl: 'https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=500' }
   ],
   healthy: [
-    { name: 'Grilled Fish & Greens', description: 'Grilled fish with steamed greens — protein-rich', tags: ['Healthy'], kcal: 380, searchQuery: 'grilled fish steamed greens', fallbackImageUrl: 'https://images.unsplash.com/photo-1519708227418-c8fd9a32b7a2?w=500' },
-    { name: 'Okra Soup & Light Swallow', description: 'Okra soup with fish and a light swallow', tags: ['Healthy'], kcal: 420, searchQuery: 'Nigerian okra soup fish', fallbackImageUrl: 'https://images.unsplash.com/photo-1607330289024-1535c6b4e1c1?w=500' },
-    { name: 'Boiled Plantain & Lean Stew', description: 'Balanced, wholesome boiled plantain with lean stew', tags: ['Healthy'], kcal: 400, searchQuery: 'boiled plantain stew', fallbackImageUrl: 'https://images.unsplash.com/photo-1599599810694-b5ac1ea27830?w=500' },
-    { name: 'Vegetable Soup & Lean Protein', description: 'Fresh vegetable soup with a lean protein', tags: ['Healthy'], kcal: 410, searchQuery: 'Nigerian vegetable soup', fallbackImageUrl: 'https://images.unsplash.com/photo-1540189549336-e6e99c3679fe?w=500' },
-    { name: 'Fruit Bowl & Honey', description: 'Natural, energizing fruit bowl with nuts and honey', tags: ['Healthy', 'Light'], kcal: 260, searchQuery: 'fruit bowl nuts honey', fallbackImageUrl: 'https://images.unsplash.com/photo-1490474418585-ba9bad8fd0ea?w=500' }
+    { name: 'Grilled Fish & Greens', description: 'Grilled fish with steamed greens — protein-rich', tags: ['Healthy'], kcal: 380, localImage: 'grilled-fish-greens.jpg', searchQuery: 'grilled fish steamed greens', fallbackImageUrl: 'https://images.unsplash.com/photo-1519708227418-c8fd9a32b7a2?w=500' },
+    { name: 'Okra Soup & Light Swallow', description: 'Okra soup with fish and a light swallow', tags: ['Healthy'], kcal: 420, localImage: 'okra-soup.jpg', searchQuery: 'Nigerian okra soup fish', fallbackImageUrl: 'https://images.unsplash.com/photo-1607330289024-1535c6b4e1c1?w=500' },
+    { name: 'Boiled Plantain & Lean Stew', description: 'Balanced, wholesome boiled plantain with lean stew', tags: ['Healthy'], kcal: 400, localImage: 'boiled-plantain-stew.jpg', searchQuery: 'boiled plantain stew', fallbackImageUrl: 'https://images.unsplash.com/photo-1599599810694-b5ac1ea27830?w=500' },
+    { name: 'Vegetable Soup & Lean Protein', description: 'Fresh vegetable soup with a lean protein', tags: ['Healthy'], kcal: 410, localImage: 'vegetable-soup.jpg', searchQuery: 'Nigerian vegetable soup', fallbackImageUrl: 'https://images.unsplash.com/photo-1540189549336-e6e99c3679fe?w=500' },
+    { name: 'Fruit Bowl & Honey', description: 'Natural, energizing fruit bowl with nuts and honey', tags: ['Healthy', 'Light'], kcal: 260, localImage: 'fruit-bowl-honey.jpg', searchQuery: 'fruit bowl nuts honey', fallbackImageUrl: 'https://images.unsplash.com/photo-1490474418585-ba9bad8fd0ea?w=500' }
   ],
   spicy: [
-    { name: 'Suya', description: 'Smoky suya with onions and chili — a spicy classic', tags: ['Spicy'], kcal: 480, searchQuery: 'suya onions chili', fallbackImageUrl: 'https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=500' },
-    { name: 'Pepper Soup', description: 'Hearty, warming pepper soup with meat', tags: ['Spicy', 'Heavy'], kcal: 440, searchQuery: 'Nigerian pepper soup meat', fallbackImageUrl: 'https://images.unsplash.com/photo-1583608205776-bfd35f0d9f83?w=500' },
-    { name: 'Spicy Jollof Rice', description: 'Bold, flavorful jollof rice with extra pepper', tags: ['Spicy'], kcal: 520, searchQuery: 'spicy jollof rice', fallbackImageUrl: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=500' },
-    { name: 'Peppered Goat Meat', description: 'Intensely flavored peppered goat meat', tags: ['Spicy', 'Heavy'], kcal: 500, searchQuery: 'peppered goat meat Nigerian', fallbackImageUrl: 'https://images.unsplash.com/photo-1544025162-d76694265947?w=500' },
-    { name: 'Scotch Bonnet Stew', description: 'Fiery hot stew with extra scotch bonnet pepper', tags: ['Spicy'], kcal: 460, searchQuery: 'scotch bonnet pepper stew', fallbackImageUrl: 'https://images.unsplash.com/photo-1606850780554-b55ea4dd0b70?w=500' }
+    { name: 'Suya', description: 'Smoky suya with onions and chili — a spicy classic', tags: ['Spicy'], kcal: 480, localImage: 'suya.jpg', searchQuery: 'suya onions chili', fallbackImageUrl: 'https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=500' },
+    { name: 'Pepper Soup', description: 'Hearty, warming pepper soup with meat', tags: ['Spicy', 'Heavy'], kcal: 440, localImage: 'pepper-soup.jpg', searchQuery: 'Nigerian pepper soup meat', fallbackImageUrl: 'https://images.unsplash.com/photo-1583608205776-bfd35f0d9f83?w=500' },
+    { name: 'Spicy Jollof Rice', description: 'Bold, flavorful jollof rice with extra pepper', tags: ['Spicy'], kcal: 520, localImage: 'spicy-jollof-rice.jpg', searchQuery: 'spicy jollof rice', fallbackImageUrl: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=500' },
+    { name: 'Peppered Goat Meat', description: 'Intensely flavored peppered goat meat', tags: ['Spicy', 'Heavy'], kcal: 500, localImage: 'peppered-goat-meat.jpg', searchQuery: 'peppered goat meat Nigerian', fallbackImageUrl: 'https://images.unsplash.com/photo-1544025162-d76694265947?w=500' },
+    { name: 'Scotch Bonnet Stew', description: 'Fiery hot stew with extra scotch bonnet pepper', tags: ['Spicy'], kcal: 460, localImage: 'scotch-bonnet-stew.jpg', searchQuery: 'scotch bonnet pepper stew', fallbackImageUrl: 'https://images.unsplash.com/photo-1606850780554-b55ea4dd0b70?w=500' }
   ],
   affordable: [
-    { name: 'Beans & Plantain', description: 'Budget-friendly, filling beans with fried plantain', tags: ['Affordable', 'Filling'], kcal: 450, searchQuery: 'beans plantain Nigerian', fallbackImageUrl: 'https://images.unsplash.com/photo-1626082927389-6cd097cee6a6?w=500' },
-    { name: 'Fried Rice & Chicken', description: 'Affordable, satisfying fried rice with chicken', tags: ['Affordable'], kcal: 560, searchQuery: 'fried rice chicken plate', fallbackImageUrl: 'https://images.unsplash.com/photo-1551632786-de41ec16a01d?w=500' },
-    { name: 'Akara & Bread', description: 'Cheap and cheerful morning meal', tags: ['Affordable', 'Light'], kcal: 340, searchQuery: 'akara bread Nigerian breakfast', fallbackImageUrl: 'https://images.unsplash.com/photo-1585238341710-4913d3ca7cc0?w=500' },
-    { name: 'Yam Porridge', description: 'Economical, tasty yam porridge with savory sauce', tags: ['Affordable'], kcal: 500, searchQuery: 'Nigerian yam porridge', fallbackImageUrl: 'https://images.unsplash.com/photo-1604908176997-125f25cc6f3d?w=500' },
-    { name: 'Rice & Stew', description: 'Classic, affordable rice and stew combo', tags: ['Affordable'], kcal: 530, searchQuery: 'rice and stew Nigerian', fallbackImageUrl: 'https://images.unsplash.com/photo-1567620905732-2d1ec7ab7445?w=500' }
+    { name: 'Beans & Plantain', description: 'Budget-friendly, filling beans with fried plantain', tags: ['Affordable', 'Filling'], kcal: 450, localImage: 'beans-plantain.jpg', searchQuery: 'beans plantain Nigerian', fallbackImageUrl: 'https://images.unsplash.com/photo-1626082927389-6cd097cee6a6?w=500' },
+    { name: 'Fried Rice & Chicken', description: 'Affordable, satisfying fried rice with chicken', tags: ['Affordable'], kcal: 560, localImage: 'fried-rice-chicken.jpg', searchQuery: 'fried rice chicken plate', fallbackImageUrl: 'https://images.unsplash.com/photo-1551632786-de41ec16a01d?w=500' },
+    { name: 'Akara & Bread', description: 'Cheap and cheerful morning meal', tags: ['Affordable', 'Light'], kcal: 340, localImage: 'akara-bread.jpg', searchQuery: 'akara bread Nigerian breakfast', fallbackImageUrl: 'https://images.unsplash.com/photo-1585238341710-4913d3ca7cc0?w=500' },
+    { name: 'Yam Porridge', description: 'Economical, tasty yam porridge with savory sauce', tags: ['Affordable'], kcal: 500, localImage: 'yam-porridge.jpg', searchQuery: 'Nigerian yam porridge', fallbackImageUrl: 'https://images.unsplash.com/photo-1604908176997-125f25cc6f3d?w=500' },
+    { name: 'Rice & Stew', description: 'Classic, affordable rice and stew combo', tags: ['Affordable'], kcal: 530, localImage: 'rice-stew.jpg', searchQuery: 'rice and stew Nigerian', fallbackImageUrl: 'https://images.unsplash.com/photo-1567620905732-2d1ec7ab7445?w=500' }
   ]
 };
 
@@ -327,15 +328,18 @@ async function handleAskHealthGoals(text, name, session, shortName) {
 }
 
 // If the user types a place name instead of tapping "share location", try to
-// geocode it rather than dead-ending the conversation.
+// geocode it rather than dead-ending the conversation. If it's not a place at
+// all (random chatter), let Grok handle it in character, then re-prompt.
 async function handleAwaitLocation(text, name, session) {
   const coords = await geocodeText(text);
 
   if (!coords) {
+    const grokReply = await askGrok(text, session, { creative: true });
+    const banter = grokReply ? `${grokReply}\n\n` : `I couldn't pin that location. `;
     return {
       replies: {
         type: 'text',
-        body: `I couldn't pin that location. Tap "Share location" above, or type an area name like "Lekki, Lagos".`
+        body: `${banter}📍 Tap "Share location" above, or type an area name like "Lekki, Lagos".`
       },
       nextStage: STAGES.AWAIT_LOCATION,
       sessionData: { selectedMood: session.selectedMood }
@@ -344,6 +348,16 @@ async function handleAwaitLocation(text, name, session) {
 
   const replies = await buildVendorLocationReply(coords.latitude, coords.longitude, session.selectedMood);
   return { replies, nextStage: null };
+}
+
+function handleMealPlanPlaceholder() {
+  return {
+    replies: {
+      type: 'text',
+      body: `📋 Weekly meal planning is a Premium feature — coming soon! For now just tell me you're hungry and I'll help you decide, meal by meal. 😊`
+    },
+    nextStage: null
+  };
 }
 
 const STAGE_HANDLERS = {
@@ -359,6 +373,11 @@ async function buildReply(text, name = 'friend', session = {}) {
 
   if (!normalized) return handleGreeting();
   if (['hi', 'hello', 'hey', 'start'].includes(normalized)) return handleGreeting();
+
+  // Quick-reply buttons shown after vendor recommendations.
+  if (normalized === 'start_over') return handleGreeting();
+  if (normalized === 'try_different_meals') return handleHungry();
+  if (normalized === 'get_meal_plan') return handleMealPlanPlaceholder();
 
   if (
     normalized.includes('what can you do')
@@ -405,7 +424,7 @@ async function buildMoodReply(category, shortName, lastMeal) {
 
   const images = await Promise.all(
     items.map(async (item) => {
-      const imageUrl = (await searchGoogleImage(item.searchQuery)) || item.fallbackImageUrl;
+      const imageUrl = await resolveImageUrl(item);
       return { type: 'image', imageUrl, caption: formatFoodCaption(item, basePrefix) };
     })
   );
@@ -483,6 +502,28 @@ async function searchGoogleImage(query) {
   return null;
 }
 
+const localImageExistsCache = new Map();
+
+function localImageExists(filename) {
+  if (localImageExistsCache.has(filename)) return localImageExistsCache.get(filename);
+  const exists = fs.existsSync(path.join(__dirname, 'public/images', filename));
+  localImageExistsCache.set(filename, exists);
+  if (DEBUG && !exists) console.warn(`Local image missing: public/images/${filename}`);
+  return exists;
+}
+
+// Resolution order: your own curated photo (guaranteed to match) > a live
+// Google Image Search result > the hand-picked stock fallback. This means
+// dropping a correctly-named file into public/images/ immediately overrides
+// the other two sources for that dish, no code change needed.
+async function resolveImageUrl(item) {
+  if (item.localImage && localImageExists(item.localImage)) {
+    return getLocalImageUrl(item.localImage);
+  }
+  const searched = await searchGoogleImage(item.searchQuery);
+  return searched || item.fallbackImageUrl;
+}
+
 // Requires the Places API (New or legacy Nearby Search) enabled on GOOGLE_API_KEY —
 // this is a separate API from the Custom Search JSON API used for images, so it
 // needs enabling separately in Google Cloud Console.
@@ -506,6 +547,106 @@ async function findNearbyVendors(latitude, longitude, mood) {
   }
 }
 
+// Nearby Search doesn't return delivery/dine-in/takeout or today's exact closing
+// time — those need a Place Details call per venue (extra API cost, which is why
+// we only enrich the top 3 rather than all 5).
+async function fetchPlaceDetails(placeId) {
+  if (!GOOGLE_API_KEY || !placeId) return null;
+
+  try {
+    const fields = 'name,rating,opening_hours,delivery,dine_in,takeout,geometry';
+    const url = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${encodeURIComponent(placeId)}&fields=${fields}&key=${encodeURIComponent(GOOGLE_API_KEY)}`;
+    const response = await fetch(url);
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data.result || null;
+  } catch (error) {
+    console.error('Place details lookup failed:', error);
+    return null;
+  }
+}
+
+function distanceKm(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const toRad = (deg) => (deg * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2
+    + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+}
+
+function formatClockTime(hhmm) {
+  if (!hhmm || hhmm.length !== 4) return null;
+  let hours = parseInt(hhmm.slice(0, 2), 10);
+  const minutes = hhmm.slice(2);
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  hours = hours % 12 || 12;
+  return `${hours}${minutes !== '00' ? ':' + minutes : ''} ${ampm}`;
+}
+
+function getTodayClosingTime(periods) {
+  if (!periods) return null;
+  const today = new Date().getDay(); // 0 = Sunday
+  const todayPeriod = periods.find((p) => p.open?.day === today);
+  return todayPeriod?.close?.time ? formatClockTime(todayPeriod.close.time) : null;
+}
+
+function getServiceText(details) {
+  const services = [];
+  if (details.delivery) services.push('Delivery available');
+  if (details.dine_in) services.push('Dine-in');
+  if (details.takeout) services.push('Takeout');
+  return services.length > 0 ? services.join(' & ') : 'Walk-in';
+}
+
+async function enrichVendor(vendor, userLat, userLng) {
+  const details = await fetchPlaceDetails(vendor.place_id);
+  const lat = vendor.geometry?.location?.lat;
+  const lng = vendor.geometry?.location?.lng;
+
+  return {
+    name: vendor.name,
+    vicinity: vendor.vicinity,
+    rating: details?.rating ?? vendor.rating,
+    openNow: details?.opening_hours?.open_now ?? vendor.opening_hours?.open_now,
+    closingTime: getTodayClosingTime(details?.opening_hours?.periods),
+    serviceText: getServiceText(details || {}),
+    distanceKm: (lat != null && lng != null) ? distanceKm(userLat, userLng, lat, lng) : null,
+    lat,
+    lng
+  };
+}
+
+function formatVendorCard(v) {
+  const stars = v.rating ? '⭐'.repeat(Math.round(v.rating)) : '';
+  const statusText = v.closingTime
+    ? `Closes ${v.closingTime}`
+    : (v.openNow === true ? 'Open now' : v.openNow === false ? 'Closed now' : 'Hours unknown');
+  const distanceText = v.distanceKm != null ? `${v.distanceKm.toFixed(1)} km away` : '';
+
+  return `*${v.name}*\n${statusText} · ${v.serviceText}${stars ? ` ${stars}` : ''}\n${distanceText}`.trim();
+}
+
+// Quick-reply buttons shown after vendor cards, so the user has an obvious
+// next move instead of having to type something.
+function getPostVendorButtonsReply(bodyText = 'What would you like to do next?') {
+  return {
+    type: 'interactive',
+    interactive: {
+      type: 'button',
+      body: { text: bodyText },
+      action: {
+        buttons: [
+          { type: 'reply', reply: { id: 'try_different_meals', title: 'Try different meals' } },
+          { type: 'reply', reply: { id: 'get_meal_plan', title: 'Get a meal plan' } },
+          { type: 'reply', reply: { id: 'start_over', title: 'Start over' } }
+        ]
+      }
+    }
+  };
+}
+
 // Fallback for when the user types a place name instead of tapping "share location".
 async function geocodeText(query) {
   if (!GOOGLE_API_KEY) return null;
@@ -523,40 +664,38 @@ async function geocodeText(query) {
   }
 }
 
-// Builds the reply once we have real coordinates: a text summary plus one
-// WhatsApp location pin per vendor so the user can tap straight into maps.
+// Builds the reply once we have real coordinates: one card-style text message
+// per vendor (status, service type, rating, distance — mirrors the mockup),
+// then a location pin per vendor, then the follow-up action buttons.
 async function buildVendorLocationReply(latitude, longitude, mood) {
   const vendors = await findNearbyVendors(latitude, longitude, mood);
 
   if (!vendors || vendors.length === 0) {
-    return {
-      type: 'text',
-      body: `I couldn't find vendors near you right now — try Jollof House, Healthy Eats NG, or a local food vendor nearby. 🏪`
-    };
+    return [
+      {
+        type: 'text',
+        body: `I couldn't find vendors near you right now — try Jollof House, Healthy Eats NG, or a local food vendor nearby. 🏪`
+      },
+      getPostVendorButtonsReply()
+    ];
   }
 
-  const listText = vendors
-    .map((v, i) => `${i + 1}. *${v.name}*${v.rating ? ` (⭐ ${v.rating})` : ''}\n${v.vicinity || ''}`)
-    .join('\n\n');
+  // Place Details costs an extra call per venue, so we only enrich the top 3.
+  const topVendors = vendors.slice(0, 3);
+  const enriched = await Promise.all(topVendors.map((v) => enrichVendor(v, latitude, longitude)));
 
-  const replies = [
-    { type: 'text', body: `📍 Here's what's near you:\n\n${listText}` }
-  ];
+  const replies = enriched.map((v) => ({ type: 'text', body: formatVendorCard(v) }));
 
-  for (const vendor of vendors) {
-    if (vendor.geometry?.location) {
+  for (const v of enriched) {
+    if (v.lat != null && v.lng != null) {
       replies.push({
         type: 'location',
-        location: {
-          latitude: vendor.geometry.location.lat,
-          longitude: vendor.geometry.location.lng,
-          name: vendor.name,
-          address: vendor.vicinity || ''
-        }
+        location: { latitude: v.lat, longitude: v.lng, name: v.name, address: v.vicinity || '' }
       });
     }
   }
 
+  replies.push(getPostVendorButtonsReply());
   return replies;
 }
 
