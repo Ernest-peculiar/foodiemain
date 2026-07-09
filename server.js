@@ -164,19 +164,30 @@ function parseEmail(text) {
 }
 
 function detectOrderFoodRequest(text) {
-  if (!text.includes('order')) return null;
-  const riceMatch = /\brice\b/.test(text);
-  const beansMatch = /\bbeans?\b|\bbeands?\b/.test(text);
-  const jollofMatch = /\bjollof\b/.test(text);
+  if (!text) return null;
+  const normalized = text.toLowerCase();
+  const riceMatch = /\brice\b/.test(normalized);
+  const beansMatch = /\bbeans?\b|\bbeands?\b/.test(normalized);
+  const jollofMatch = /\bjollof\b/.test(normalized);
+  const wantMatch = /\b(order|eat|want|need|crave|give me|feed me|serve me|meal|meals?)\b/.test(normalized);
+  const negativeMatch = /\b(no|not|don't|dont|never|nothing)\b/.test(normalized);
 
   const items = [];
   if (riceMatch) items.push('rice');
   if (beansMatch) items.push('beans');
   if (jollofMatch) items.push('jollof');
 
-  if (items.length > 0) return items.join(' and ');
-  const match = text.match(/order\s+(.*)/i);
-  return match ? match[1].trim() : null;
+  if (items.length === 0) {
+    const match = normalized.match(/order\s+(.*)/i);
+    return match ? match[1].trim() : null;
+  }
+
+  if (negativeMatch && wantMatch) return null;
+  if (wantMatch || items.length > 1 || normalized.length < 20) {
+    return items.join(' and ');
+  }
+
+  return null;
 }
 
 // Curated restaurant list for the AE-FUNAI / Abakaliki area. We hardcode this
