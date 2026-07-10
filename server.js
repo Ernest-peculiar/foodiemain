@@ -662,7 +662,9 @@ async function getStageResumeReply(session) {
         ? [{ type: 'text', body: `Here's what was nearby 👇 Tap a restaurant to choose.` }, getRestaurantListReply(session.nearbyVendors)]
         : { type: 'text', body: `Which restaurant would you like to order from?` };
     case STAGES.ORDER_SELECT_COMBO:
-      return [{ type: 'text', body: `Here's the menu again 👇` }, ...(await buildComboImageReplies()), getComboListReply()];
+      // Resend just the menu list — no image dump. Images are shown once a
+      // specific combo is picked (see handleOrderSelectCombo).
+      return [{ type: 'text', body: `Here's the menu again 👇` }, getComboListReply()];
     case STAGES.ORDER_ENTER_QTY:
       return { type: 'text', body: `How many would you like? (e.g. "2")` };
     case STAGES.ORDER_AWAIT_ADDRESS:
@@ -880,7 +882,9 @@ function getRestaurantListReply(vendors, bodyText = 'Nearby restaurants') {
 // (e.g. the user names a place we didn't list, or didn't list one at all).
 // We don't have real per-restaurant menus (Places doesn't expose one), so
 // either way we offer our curated dish list against whichever vendor we end
-// up with.
+// up with. We show the menu LIST straight away — no image dump — and only
+// show the image of the specific combo once the user actually picks one
+// (see handleOrderSelectCombo).
 async function handleOrderSelectRestaurant(text, name, session) {
   const trimmed = (text || '').trim();
   const idx = parseInt(trimmed.replace('vendor_', ''), 10);
@@ -902,31 +906,14 @@ async function handleOrderSelectRestaurant(text, name, session) {
     };
   }
 
-  const comboImages = await buildComboImageReplies();
-
   return {
     replies: [
       { type: 'text', body: `Great pick! Here's the menu for *${vendor.name}* 👇` },
-      ...comboImages,
-      { type: 'text', body: `Pick one below to order:` },
       getComboListReply()
     ],
     nextStage: STAGES.ORDER_SELECT_COMBO,
     sessionData: { selectedVendor: vendor, userLat: session.userLat, userLng: session.userLng }
   };
-}
-
-// One message per combo — an image with a caption — mirroring how vendor
-// info cards and location pins are each sent as their own message, followed
-// by the tappable list to actually make the selection.
-async function buildComboImageReplies() {
-  return Promise.all(
-    ORDER_COMBOS.map(async (combo) => {
-      const imageUrl = await resolveImageUrl(combo);
-      const caption = `*${combo.title}*\n${combo.description}\n₦${combo.price.toLocaleString('en-US')}`;
-      return imageUrl ? { type: 'image', imageUrl, caption } : { type: 'text', body: caption };
-    })
-  );
 }
 
 function getComboListReply(bodyText = 'Rice meal combos available') {
@@ -952,8 +939,9 @@ function getComboListReply(bodyText = 'Rice meal combos available') {
   };
 }
 
-// Step 3: combo picked, ask quantity as free text.
-function handleOrderSelectCombo(text, name, session) {
+// Step 3: combo picked. Send the image of THAT combo (caption doubles as the
+// quantity prompt), then ask quantity as free text.
+async function handleOrderSelectCombo(text, name, session) {
   const idx = parseInt((text || '').replace('combo_', ''), 10);
   const combo = Number.isInteger(idx) ? ORDER_COMBOS[idx] : null;
 
@@ -965,11 +953,12 @@ function handleOrderSelectCombo(text, name, session) {
     };
   }
 
+  const caption = `*${combo.title}* is a great choice! How many would you like? (e.g. "2")`;
+  const imageUrl = await resolveImageUrl(combo);
+  const reply = imageUrl ? { type: 'image', imageUrl, caption } : { type: 'text', body: caption };
+
   return {
-    replies: {
-      type: 'text',
-      body: `*${combo.title}* is a great choice! How many would you like? (e.g. "2")`
-    },
+    replies: reply,
     nextStage: STAGES.ORDER_ENTER_QTY,
     sessionData: { selectedVendor: session.selectedVendor, selectedComboIdx: idx, userLat: session.userLat, userLng: session.userLng }
   };
@@ -1262,12 +1251,9 @@ async function buildReply(text, name = 'friend', session = {}, phone) {
       const namedVendor = detectVendorNameFromText(text);
       if (namedVendor) {
         const vendor = { name: titleCase(namedVendor), vicinity: 'Restaurant specified by customer' };
-        const comboImages = await buildComboImageReplies();
         return {
           replies: [
             { type: 'text', body: `Got it — ordering ${orderIntent} from *${vendor.name}*. Here's the menu 👇` },
-            ...comboImages,
-            { type: 'text', body: `Pick one below to order:` },
             getComboListReply()
           ],
           nextStage: STAGES.ORDER_SELECT_COMBO,
@@ -1387,9 +1373,8 @@ function getLocalImageUrl(filename) {
 }
 
 // Local files only — no external URL fallback. If the file listed in
-// localImage isn't in public/images/, we return null and the caller (see
-// buildComboImageReplies) sends plain text for that item instead of an
-// unrelated stock photo.
+// localImage isn't in public/images/, we return null and the caller sends
+// plain text for that item instead of an unrelated stock photo.
 async function resolveImageUrl(item) {
   if (item.localImage && localImageExists(item.localImage)) {
     return getLocalImageUrl(item.localImage);
