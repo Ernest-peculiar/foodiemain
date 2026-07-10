@@ -69,6 +69,7 @@ const STAGES = {
   // New: exact delivery address must be collected before we ever generate a
   // Paystack payment link, so a rider actually has somewhere to deliver to.
   ORDER_AWAIT_ADDRESS: 'orderAwaitAddress',
+  VENDOR_AWAIT_MENU: 'vendorAwaitMenu',
   DRIVER_AWAIT_PHOTO: 'driverAwaitPhoto'
 };
 
@@ -364,19 +365,45 @@ async function finalizeRegistration(text, phone, session) {
   }
 
   if (role === 'vendor') {
+    if (session.stage === 'vendorAwaitName') {
+      if (!name) return null;
+      return {
+        replies: {
+          type: 'text',
+          body: 'Nice! Now send your restaurant menu. You can list dishes, prices, or a short menu description.'
+        },
+        nextStage: STAGES.VENDOR_AWAIT_MENU,
+        sessionData: { ...session, vendorName: name }
+      };
+    }
+
+    const menuText = name;
+    const vendorName = session.vendorName;
+    if (!vendorName || !menuText) {
+      return {
+        replies: {
+          type: 'text',
+          body: 'Please tell me your restaurant name first, then send your menu.'
+        },
+        nextStage: 'vendorAwaitName',
+        sessionData: { ...session, registrationRole: 'vendor', vendorName: null }
+      };
+    }
+
     const vendor = await dispatch.upsertVendor(supabase, {
       phone: normalizePhone(phone),
-      name,
+      name: vendorName,
+      menu: menuText,
       isActive: true,
       isOpen: true
     });
     return {
       replies: {
         type: 'text',
-        body: `✅ Registered ${name} as a vendor. Reply open/close to toggle availability.`
+        body: `✅ Registered ${vendorName} as a vendor. Reply open/close to toggle availability.`
       },
       nextStage: null,
-      sessionData: { ...session, registrationRole: null }
+      sessionData: { ...session, registrationRole: null, vendorName: null }
     };
   }
 
@@ -865,7 +892,7 @@ async function handleIncomingMessage(message, value) {
     || message.interactive?.list_reply?.title
     || '';
 
-  if (session.stage === 'vendorAwaitName' || session.stage === 'driverAwaitName') {
+  if (session.stage === 'vendorAwaitName' || session.stage === STAGES.VENDOR_AWAIT_MENU || session.stage === 'driverAwaitName') {
     result = await finalizeRegistration(text, from, session);
   } else if (session.stage === STAGES.DRIVER_AWAIT_PHOTO) {
     result = await handleDeliveryPhotoMessage(message, from, session);

@@ -4,6 +4,7 @@ create table if not exists vendors (
   id uuid primary key default gen_random_uuid(),
   name text not null,
   phone text unique,
+  menu text,
   is_active boolean not null default true,
   is_open boolean not null default true,
   created_at timestamptz not null default now(),
