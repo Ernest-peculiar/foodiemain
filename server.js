@@ -44,6 +44,8 @@ const imageCache = new Map();
 // without a project set up yet). When Supabase IS configured it is the single
 // source of truth for session state — see getSession/setSession/deleteSession.
 const sessions = new Map();
+// In-memory fallback for long-term profiles (see getProfile/saveProfile).
+const profiles = new Map();
 
 // Centralizing stage names avoids typo bugs like 'askLastmeal' vs 'askLastMeal'
 // scattered across the file.
@@ -60,6 +62,21 @@ const STAGES = {
   // New: exact delivery address must be collected before we ever generate a
   // Paystack payment link, so a rider actually has somewhere to deliver to.
   ORDER_AWAIT_ADDRESS: 'orderAwaitAddress'
+};
+
+// Human-readable labels for each stage, used when we ask a returning user
+// whether they'd like to resume a flow they left mid-way ("You were in the
+// middle of picking a meal combo — resume or start over?").
+const STAGE_LABELS = {
+  [STAGES.ASK_LAST_MEAL]: 'telling me what you last ate',
+  [STAGES.ASK_MOOD]: 'picking a mood',
+  [STAGES.ASK_HEALTH_GOALS]: 'sharing your health goals',
+  [STAGES.AWAIT_LOCATION]: 'sharing your location for vendor recommendations',
+  [STAGES.ORDER_AWAIT_LOCATION]: 'sharing your location to order',
+  [STAGES.ORDER_SELECT_RESTAURANT]: 'picking a restaurant',
+  [STAGES.ORDER_SELECT_COMBO]: 'picking a meal combo',
+  [STAGES.ORDER_ENTER_QTY]: 'entering a quantity',
+  [STAGES.ORDER_AWAIT_ADDRESS]: 'entering your delivery address'
 };
 
 // Single source of truth for mood text -> category, replacing the old duplicated
@@ -232,9 +249,11 @@ function detectOrderFoodRequest(text) {
 // --- Persistence (Supabase) ------------------------------------------------
 // Session state (`sessions` table) drives the conversation flow and now
 // survives restarts/deploys. `messages` is a full inbound/outbound chat log
-// for analytics, support, and debugging. Both degrade gracefully to the old
-// in-memory Map (session only, no chat log) if Supabase isn't configured, so
-// local dev without a Supabase project still works.
+// for analytics, support, and debugging. `profiles` is long-term memory that
+// survives even after a flow finishes (unlike `sessions`, which is cleared),
+// so we can reference a user's history ("last time you ordered...") on their
+// next visit. All three degrade gracefully to in-memory Maps if Supabase
+// isn't configured, so local dev without a Supabase project still works.
 
 async function getSession(phone) {
   if (!supabase) return sessions.get(phone) || {};
@@ -275,6 +294,55 @@ async function deleteSession(phone) {
 
   const { error } = await supabase.from('sessions').delete().eq('phone', phone);
   if (error) console.error('Supabase deleteSession failed:', error.message);
+}
+
+// Long-term, cross-conversation memory. Unlike sessions (wiped once a flow
+// completes or resets), this persists indefinitely so a returning user can be
+// greeted with something useful, e.g. their last order. Requires a `profiles`
+// table:
+//
+//   create table profiles (
+//     phone text primary key,
+//     data jsonb not null default '{}'::jsonb,
+//     updated_at timestamptz not null default now()
+//   );
+//
+async function getProfile(phone) {
+  if (!phone) return {};
+  if (!supabase) return profiles.get(phone) || {};
+
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('data')
+    .eq('phone', phone)
+    .maybeSingle();
+
+  if (error) {
+    console.error('Supabase getProfile failed:', error.message);
+    return {};
+  }
+  return data?.data || {};
+}
+
+// Shallow-merges `patch` into whatever profile data already exists, so callers
+// only need to pass the fields they're updating (e.g. { lastOrder: {...} })
+// without clobbering other stored fields.
+async function saveProfile(phone, patch = {}) {
+  if (!phone) return;
+
+  if (!supabase) {
+    const existing = profiles.get(phone) || {};
+    profiles.set(phone, { ...existing, ...patch });
+    return;
+  }
+
+  const existing = await getProfile(phone);
+  const merged = { ...existing, ...patch };
+  const { error } = await supabase
+    .from('profiles')
+    .upsert({ phone, data: merged, updated_at: new Date().toISOString() }, { onConflict: 'phone' });
+
+  if (error) console.error('Supabase saveProfile failed:', error.message);
 }
 
 // Logs one line of chat history. `payload` keeps the raw WhatsApp
@@ -366,7 +434,7 @@ async function handleIncomingMessage(message, value) {
 
     if (DEBUG) console.log(`Message from ${from}: ${text}`);
     await logMessage(from, 'inbound', message.type || 'text', text, message);
-    result = await buildReply(text, senderName, session);
+    result = await buildReply(text, senderName, session, from);
   }
 
   const replies = result.replies;
@@ -458,18 +526,101 @@ function getGreetingButtonsReply(bodyText = 'Or tap an option below 👇') {
   };
 }
 
-async function handleGreeting(seedText = 'hello', name = 'friend') {
+// If we have a remembered last order for this user, greet them with a
+// one-tap "order that again" card instead of the generic buttons — this is
+// the main way past information gets surfaced back to a returning user.
+function getReorderButtonsReply(lastOrder) {
+  const total = lastOrder.total ?? (lastOrder.qty || 1) * 0; // fallback if an older profile lacks `total`
+  const bodyText = `🍔 *Welcome back!*\nYour last order was\n*${lastOrder.vendorName}*\n${lastOrder.comboTitle} ×${lastOrder.qty}\n₦${total.toLocaleString('en-US')}\nWould you like it again?`;
+
+  return {
+    type: 'interactive',
+    interactive: {
+      type: 'button',
+      body: { text: bodyText },
+      action: {
+        buttons: [
+          // WhatsApp caps reply button titles at 20 characters — slice as a safety net.
+          { type: 'reply', reply: { id: 'reorder_last', title: '🟢 Reorder'.slice(0, 20) } },
+          { type: 'reply', reply: { id: 'browse_restaurants', title: '🍽 Browse Restaurants'.slice(0, 20) } },
+          { type: 'reply', reply: { id: 'something_different', title: '❌ Something Different'.slice(0, 20) } }
+        ]
+      }
+    }
+  };
+}
+
+async function handleGreeting(seedText = 'hello', name = 'friend', profile = {}) {
   const grokReply = await askGrok(seedText, {}, { creative: true });
   const greetingText = `Hi ${name}, I'm *Foodie* — your personal Nigerian food guide. Tell me what you'd like to eat and I'll handle the rest!`;
 
+  const replies = [
+    { type: 'text', body: greetingText },
+    { type: 'text', body: grokReply || `I'm here to help you order food, find nearby restaurants, or get meal ideas.` }
+  ];
+
+  // Reference remembered history if we have it, otherwise fall back to the
+  // plain greeting buttons.
+  replies.push(profile.lastOrder ? getReorderButtonsReply(profile.lastOrder) : getGreetingButtonsReply());
+
+  return { replies, nextStage: null };
+}
+
+// Shown instead of a full reset when a returning user still has an
+// interrupted flow in progress (session.stage is set). Lets them either pick
+// up exactly where they stopped or explicitly wipe it and start fresh —
+// previously any stray "hi" mid-flow silently deleted their progress.
+function handleResumePrompt(session, shortName) {
+  const label = STAGE_LABELS[session.stage] || 'something';
   return {
-    replies: [
-      { type: 'text', body: greetingText },
-      { type: 'text', body: grokReply || `I'm here to help you order food, find nearby restaurants, or get meal ideas.` },
-      getGreetingButtonsReply()
-    ],
-    nextStage: null
+    replies: {
+      type: 'interactive',
+      interactive: {
+        type: 'button',
+        body: { text: `Welcome back, ${shortName}! You were in the middle of ${label}. Pick up where you left off, or start fresh?` },
+        action: {
+          buttons: [
+            { type: 'reply', reply: { id: 'resume_flow', title: '▶️ Resume' } },
+            { type: 'reply', reply: { id: 'start_over', title: '🔄 Start over' } }
+          ]
+        }
+      }
+    },
+    // Crucially this reply doesn't advance or clear the session — it just
+    // asks what to do, keeping everything gathered so far intact.
+    nextStage: session.stage,
+    sessionData: session
   };
+}
+
+// Re-sends whatever prompt/options belong to the user's current stage,
+// without consuming their next message as input to that stage — used when
+// they tap "Resume" from handleResumePrompt.
+function getStageResumeReply(session) {
+  switch (session.stage) {
+    case STAGES.ASK_LAST_MEAL:
+      return { type: 'text', body: `Where were we — what did you last eat?` };
+    case STAGES.ASK_MOOD:
+      return [{ type: 'text', body: `What are you in the mood for?` }, getMoodButtonsReply()];
+    case STAGES.ASK_HEALTH_GOALS:
+      return { type: 'text', body: `Any health goals I should know about?` };
+    case STAGES.AWAIT_LOCATION:
+      return getLocationRequestReply();
+    case STAGES.ORDER_AWAIT_LOCATION:
+      return getLocationRequestReply('Share your location so I can find restaurants near you 📍');
+    case STAGES.ORDER_SELECT_RESTAURANT:
+      return session.nearbyVendors?.length
+        ? [{ type: 'text', body: `Here's what was nearby 👇 Tap a restaurant to choose.` }, getRestaurantListReply(session.nearbyVendors)]
+        : { type: 'text', body: `Which restaurant would you like to order from?` };
+    case STAGES.ORDER_SELECT_COMBO:
+      return [{ type: 'text', body: `Pick a meal combo:` }, getComboListReply()];
+    case STAGES.ORDER_ENTER_QTY:
+      return { type: 'text', body: `How many would you like? (e.g. "2")` };
+    case STAGES.ORDER_AWAIT_ADDRESS:
+      return { type: 'text', body: `Please type your *exact delivery address* — street name, house number or a nearby landmark, and the area.` };
+    default:
+      return { type: 'text', body: `Let's continue!` };
+  }
 }
 
 function handleCapabilities() {
@@ -527,6 +678,29 @@ function handleOrderNow() {
     ],
     nextStage: STAGES.ORDER_AWAIT_LOCATION,
     sessionData: {}
+  };
+}
+
+// One-tap reorder: reuse the vendor + combo from the user's remembered last
+// order and skip straight to confirming a delivery address, instead of
+// walking them through location -> restaurant -> combo -> qty again.
+function handleReorderLast(profile) {
+  const lastOrder = profile.lastOrder;
+  if (!lastOrder) return handleOrderNow();
+
+  const vendor = { name: lastOrder.vendorName, vicinity: lastOrder.vendorVicinity || 'Previously used restaurant' };
+
+  return {
+    replies: {
+      type: 'text',
+      body: `Great, ${lastOrder.qty} x *${lastOrder.comboTitle}* from *${vendor.name}* again 🙌\nPlease confirm the delivery address (last time: "${lastOrder.address}") — or type a new one.`
+    },
+    nextStage: STAGES.ORDER_AWAIT_ADDRESS,
+    sessionData: {
+      selectedVendor: vendor,
+      selectedComboIdx: lastOrder.comboIdx,
+      qty: lastOrder.qty
+    }
   };
 }
 
@@ -840,8 +1014,10 @@ function isLikelyValidAddress(text) {
 }
 
 // Step 5: exact delivery address given. Only now do we talk to Paystack and
-// notify staff — this is the payment gate the user asked for.
-async function handleOrderAwaitAddress(text, name, session, shortName) {
+// notify staff — this is the payment gate the user asked for. We also save a
+// `lastOrder` snapshot to the user's persistent profile so a future greeting
+// can offer a one-tap reorder.
+async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
   const combo = ORDER_COMBOS[session.selectedComboIdx];
   const vendor = session.selectedVendor;
   const qty = session.qty;
@@ -877,6 +1053,23 @@ async function handleOrderAwaitAddress(text, name, session, shortName) {
     : `I couldn't create the payment link right now. Please try again later or contact support.`;
 
   await sendOrderNotification({ customerName: name, item: combo, qty, vendor, address, paymentUrl: payment?.authorization_url });
+
+  // Remember this order (vendor, combo, qty, address, email) so a future
+  // conversation can reference it — e.g. the "order that again" prompt in
+  // handleGreeting, or reusing the address/email on the next checkout.
+  await saveProfile(phone, {
+    lastOrder: {
+      vendorName: vendor.name,
+      vendorVicinity: vendor.vicinity,
+      comboIdx: session.selectedComboIdx,
+      comboTitle: combo.title,
+      qty,
+      total: combo.price * qty,
+      address,
+      email,
+      at: new Date().toISOString()
+    }
+  });
 
   return {
     replies: [
@@ -948,19 +1141,37 @@ const STAGE_HANDLERS = {
   [STAGES.ORDER_AWAIT_ADDRESS]: handleOrderAwaitAddress
 };
 
-async function buildReply(text, name = 'friend', session = {}) {
+async function buildReply(text, name = 'friend', session = {}, phone) {
   const normalized = text.trim().toLowerCase();
   const shortName = name.split(' ')[0] || 'friend';
 
-  if (!normalized) return handleGreeting('hello', shortName);
-  if (['hi', 'hello', 'hey', 'start'].includes(normalized)) return handleGreeting(text, shortName);
+  // Greeting words no longer blindly reset an in-progress flow. If the user
+  // still has an active stage (e.g. they went quiet mid-order and just said
+  // "hi"), offer Resume/Start over instead of silently wiping their progress.
+  if (!normalized || ['hi', 'hello', 'hey', 'start'].includes(normalized)) {
+    if (session.stage) return handleResumePrompt(session, shortName);
+    const profile = await getProfile(phone);
+    return handleGreeting(text || 'hello', shortName, profile);
+  }
 
   // Quick-reply buttons shown after vendor recommendations / the hungry prompt.
-  if (normalized === 'start_over') return handleGreeting("let's start over", shortName);
+  if (normalized === 'start_over') return handleGreeting("let's start over", shortName, await getProfile(phone));
+  if (normalized === 'resume_flow') {
+    // Re-send the current stage's prompt without consuming this tap as input
+    // to that stage, and keep the session exactly as it was.
+    return { replies: getStageResumeReply(session), nextStage: session.stage, sessionData: session };
+  }
   if (normalized === 'try_different_meals') return handleHungry();
   if (normalized === 'get_meal_plan') return handleMealPlanPlaceholder();
   if (normalized === 'order_now') return handleOrderNow();
   if (normalized === 'recommend_meals') return handleRecommendMeals();
+  if (normalized === 'reorder_last') return handleReorderLast(await getProfile(phone));
+  // From the "Welcome back" reorder card: skip straight into the normal
+  // order flow (location -> restaurant list) instead of reusing last time's vendor.
+  if (normalized === 'browse_restaurants') return handleOrderNow();
+  // From the same card: open up the broader options (order now / recommend
+  // meals) rather than assuming they want another order at all.
+  if (normalized === 'something_different') return handleHungry();
 
   if (
     normalized.includes('what can you do')
@@ -999,7 +1210,7 @@ async function buildReply(text, name = 'friend', session = {}) {
   }
 
   const handler = STAGE_HANDLERS[session.stage];
-  if (handler) return handler(text, name, session, shortName);
+  if (handler) return handler(text, name, session, shortName, phone);
 
   // Fall through to Grok for anything unrecognized — creative mode gives
   // real personality instead of a flat, repetitive fallback line.
