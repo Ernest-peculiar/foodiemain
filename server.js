@@ -529,9 +529,9 @@ function getGreetingButtonsReply(bodyText = 'Or tap an option below 👇') {
 // If we have a remembered last order for this user, greet them with a
 // one-tap "order that again" card instead of the generic buttons — this is
 // the main way past information gets surfaced back to a returning user.
-function getReorderButtonsReply(lastOrder) {
+function getReorderButtonsReply(lastOrder, name = 'there') {
   const total = lastOrder.total ?? (lastOrder.qty || 1) * 0; // fallback if an older profile lacks `total`
-  const bodyText = `🍔 *Welcome back!*\nYour last order was\n*${lastOrder.vendorName}*\n${lastOrder.comboTitle} ×${lastOrder.qty}\n₦${total.toLocaleString('en-US')}\nWould you like it again?`;
+  const bodyText = `🍔 *Welcome back, ${name}!*\nYour last order was\n*${lastOrder.vendorName}*\n${lastOrder.comboTitle} ×${lastOrder.qty}\n₦${total.toLocaleString('en-US')}\nWould you like it again?`;
 
   return {
     type: 'interactive',
@@ -550,20 +550,40 @@ function getReorderButtonsReply(lastOrder) {
   };
 }
 
-async function handleGreeting(seedText = 'hello', name = 'friend', profile = {}) {
+async function handleGreeting(seedText = 'hello', name = 'friend', profile = {}, phone) {
+  // A non-empty profile means we've talked to this person before (they have
+  // at least a firstSeenAt timestamp, possibly a lastOrder too) — no need to
+  // re-explain who Foodie is every single time they say "hi".
+  const isReturning = Object.keys(profile).length > 0;
+
+  if (isReturning) {
+    if (profile.lastOrder) {
+      return { replies: [getReorderButtonsReply(profile.lastOrder, name)], nextStage: null };
+    }
+    return {
+      replies: [
+        { type: 'text', body: `Welcome back, ${name}! 👋 What are you hungry for today?` },
+        getGreetingButtonsReply()
+      ],
+      nextStage: null
+    };
+  }
+
+  // First-time user — give the full introduction, and remember we've now
+  // met them so future greetings skip straight to "welcome back".
   const grokReply = await askGrok(seedText, {}, { creative: true });
   const greetingText = `Hi ${name}, I'm *Foodie* — your personal Nigerian food guide. Tell me what you'd like to eat and I'll handle the rest!`;
 
-  const replies = [
-    { type: 'text', body: greetingText },
-    { type: 'text', body: grokReply || `I'm here to help you order food, find nearby restaurants, or get meal ideas.` }
-  ];
+  if (phone) await saveProfile(phone, { firstSeenAt: new Date().toISOString() });
 
-  // Reference remembered history if we have it, otherwise fall back to the
-  // plain greeting buttons.
-  replies.push(profile.lastOrder ? getReorderButtonsReply(profile.lastOrder) : getGreetingButtonsReply());
-
-  return { replies, nextStage: null };
+  return {
+    replies: [
+      { type: 'text', body: greetingText },
+      { type: 'text', body: grokReply || `I'm here to help you order food, find nearby restaurants, or get meal ideas.` },
+      getGreetingButtonsReply()
+    ],
+    nextStage: null
+  };
 }
 
 // Shown instead of a full reset when a returning user still has an
@@ -1151,11 +1171,11 @@ async function buildReply(text, name = 'friend', session = {}, phone) {
   if (!normalized || ['hi', 'hello', 'hey', 'start'].includes(normalized)) {
     if (session.stage) return handleResumePrompt(session, shortName);
     const profile = await getProfile(phone);
-    return handleGreeting(text || 'hello', shortName, profile);
+    return handleGreeting(text || 'hello', shortName, profile, phone);
   }
 
   // Quick-reply buttons shown after vendor recommendations / the hungry prompt.
-  if (normalized === 'start_over') return handleGreeting("let's start over", shortName, await getProfile(phone));
+  if (normalized === 'start_over') return handleGreeting("let's start over", shortName, await getProfile(phone), phone);
   if (normalized === 'resume_flow') {
     // Re-send the current stage's prompt without consuming this tap as input
     // to that stage, and keep the session exactly as it was.
