@@ -370,7 +370,7 @@ async function finalizeRegistration(text, phone, session) {
       return {
         replies: {
           type: 'text',
-          body: 'Nice! Now send your restaurant menu. You can list dishes, prices, or a short menu description.'
+          body: 'Nice! Now send your restaurant menu as text. You can list one item per line with optional prices, use commas, or send a short menu description. Example:\nRice & Beans - 1500\nEgusi Soup - 1800\nChicken Sandwich - 1200'
         },
         nextStage: STAGES.VENDOR_AWAIT_MENU,
         sessionData: { ...session, vendorName: name }
