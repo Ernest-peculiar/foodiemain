@@ -311,7 +311,10 @@ async function handleAvailabilityCommands(text, phone, session) {
 }
 
 async function handleRegistrationFlow(text, phone, session) {
-  const normalized = (text || '').trim().toLowerCase();
+  let normalized = (text || '').trim().toLowerCase();
+  if (normalized === 'register_vendor') normalized = 'register vendor';
+  if (normalized === 'register_driver') normalized = 'register driver';
+
   if (normalized !== 'register vendor' && normalized !== 'register driver') {
     return null;
   }
