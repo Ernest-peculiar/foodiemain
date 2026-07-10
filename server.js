@@ -426,9 +426,15 @@ async function handleIncomingMessage(message, value) {
     const { latitude, longitude } = message.location;
     await logMessage(from, 'inbound', 'location', `${latitude},${longitude}`, message.location);
 
-    if (session.stage === STAGES.ORDER_AWAIT_LOCATION) {
+    if (session.stage === STAGES.ORDER_AWAIT_LOCATION || session.stage === STAGES.AWAIT_LOCATION) {
+      // Both the direct-order flow and the mood-recommendation flow now lead
+      // into the same restaurant -> menu -> qty -> address -> pay pipeline,
+      // so the user can actually order and pay instead of just being shown
+      // cards and a pin and left to sort it out themselves.
       result = await handleOrderLocationReceived(latitude, longitude, session);
     } else {
+      // No active flow (e.g. a location shared out of the blue) — just show
+      // informational vendor cards, nothing to transact against yet.
       const replies = await buildVendorLocationReply(latitude, longitude, session.selectedMood);
       result = { replies, nextStage: null };
     }
@@ -797,8 +803,7 @@ async function handleAwaitLocation(text, name, session) {
     };
   }
 
-  const replies = await buildVendorLocationReply(coords.latitude, coords.longitude, session.selectedMood, session.orderIntent);
-  return { replies, nextStage: null };
+  return buildVendorLocationReply(coords.latitude, coords.longitude, session.selectedMood, session.orderIntent);
 }
 
 // Step 1 of ordering: we have coordinates, so pull nearby restaurants (name/
@@ -820,8 +825,10 @@ async function handleOrderLocationReceived(latitude, longitude, session) {
   }
 
   const replyText = session.orderIntent
-    ? `Here's what's nearby that can serve ${session.orderIntent} 👇 Tap a restaurant to choose.`
-    : `Here's what's nearby 👇 Tap a restaurant to choose.`;
+    ? `Here's what's nearby that can serve ${session.orderIntent} 👇 Tap a restaurant to see the menu and pay.`
+    : session.selectedMood
+      ? `Here's where you can get *${session.selectedMood}* meals near you 👇 Tap a restaurant to see the menu and pay.`
+      : `Here's what's nearby 👇 Tap a restaurant to see the menu and pay.`;
 
   return {
     replies: [
@@ -1478,16 +1485,21 @@ async function buildVendorLocationReply(latitude, longitude, mood, orderIntent) 
   const vendors = await findNearbyVendors(latitude, longitude, mood, orderIntent);
 
   if (!vendors || vendors.length === 0) {
-    return [
-      {
-        type: 'text',
-        body: `I couldn't find vendors near you right now — try Jollof House, Healthy Eats NG, or a local food vendor nearby. 🏪`
-      },
-      getPostVendorButtonsReply()
-    ];
+    return {
+      replies: [
+        {
+          type: 'text',
+          body: `I couldn't find vendors near you right now — try Jollof House, Healthy Eats NG, or a local food vendor nearby. 🏪`
+        },
+        getPostVendorButtonsReply()
+      ],
+      nextStage: null
+    };
   }
 
-  // Place Details costs an extra call per venue, so we only enrich the top 3.
+  // Show a few enriched cards + pins as context (distance, contact, status),
+  // then a tappable list so the user can actually pick one and order/pay
+  // instead of just being pointed at a pin with nothing to do next.
   const topVendors = vendors.slice(0, 3);
   const enriched = await Promise.all(topVendors.map((v) => enrichVendor(v, latitude, longitude)));
 
@@ -1495,22 +1507,33 @@ async function buildVendorLocationReply(latitude, longitude, mood, orderIntent) 
     ? `Here's where you can get *${mood}* meals near you 👇`
     : `Here's what's nearby 👇`;
 
-  const replies = [
+  const infoReplies = [
     { type: 'text', body: introText },
     ...enriched.map((v) => ({ type: 'text', body: formatVendorCard(v, mood) }))
   ];
 
   for (const v of enriched) {
     if (v.lat != null && v.lng != null) {
-      replies.push({
+      infoReplies.push({
         type: 'location',
         location: { latitude: v.lat, longitude: v.lng, name: v.name, address: v.vicinity || '' }
       });
     }
   }
 
-  replies.push(getPostVendorButtonsReply());
-  return replies;
+  const orderPromptText = mood
+    ? `Tap a restaurant below to see the menu and pay 👇`
+    : `Tap a restaurant below to order 👇`;
+
+  return {
+    replies: [
+      ...infoReplies,
+      { type: 'text', body: orderPromptText },
+      getRestaurantListReply(vendors)
+    ],
+    nextStage: STAGES.ORDER_SELECT_RESTAURANT,
+    sessionData: { nearbyVendors: vendors, userLat: latitude, userLng: longitude, selectedMood: mood, orderIntent }
+  };
 }
 
 async function sendWhatsAppMessage(to, reply) {
