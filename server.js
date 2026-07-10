@@ -1465,6 +1465,23 @@ async function handleOrderSelectCombo(text, name, session) {
   const trimmed = (text || '').trim();
 
   if (trimmed.startsWith('proceed_qty_')) {
+    if (trimmed.startsWith('proceed_qty_item_') && Array.isArray(session.menuItems)) {
+      const idx = parseInt(trimmed.replace('proceed_qty_item_', ''), 10);
+      const combo = session.menuItems[idx];
+      if (!combo) {
+        return {
+          replies: { type: 'text', body: `Something went wrong — please pick a menu item again 👆` },
+          nextStage: STAGES.ORDER_SELECT_COMBO,
+          sessionData: { selectedVendor: session.selectedVendor, userLat: session.userLat, userLng: session.userLng }
+        };
+      }
+      return {
+        replies: { type: 'text', body: `*${combo.title || combo.name}* is a great choice! How many would you like? (e.g. "2")` },
+        nextStage: STAGES.ORDER_ENTER_QTY,
+        sessionData: { selectedVendor: session.selectedVendor, selectedComboIdx: idx, userLat: session.userLat, userLng: session.userLng }
+      };
+    }
+
     const idx = parseInt(trimmed.replace('proceed_qty_', ''), 10);
     const combo = Number.isInteger(idx) ? ORDER_COMBOS[idx] : null;
 
@@ -1484,32 +1501,55 @@ async function handleOrderSelectCombo(text, name, session) {
   }
 
   const idx = parseInt(trimmed.replace('combo_', ''), 10);
-  const combo = Number.isInteger(idx) && trimmed.startsWith('combo_') ? ORDER_COMBOS[idx] : null;
-
-  if (!combo) {
-    return {
-      replies: { type: 'text', body: `Please tap a meal combo from the list above 👆` },
-      nextStage: STAGES.ORDER_SELECT_COMBO,
-      sessionData: { selectedVendor: session.selectedVendor, userLat: session.userLat, userLng: session.userLng }
-    };
+  // Support both built-in combos (`combo_<idx>`) and vendor menu items (`item_<idx>`)
+  let combo = null;
+  if (trimmed.startsWith('combo_')) {
+    const cidx = parseInt(trimmed.replace('combo_', ''), 10);
+    combo = Number.isInteger(cidx) ? ORDER_COMBOS[cidx] : null;
+    if (combo) {
+      // normalize selectedComboIdx to numeric index
+      return {
+        replies: {
+          type: 'text',
+          body: `*${combo.title}* is a great choice! How many would you like? (e.g. "2")`
+        },
+        nextStage: STAGES.ORDER_ENTER_QTY,
+        sessionData: { selectedVendor: session.selectedVendor, selectedComboIdx: cidx, userLat: session.userLat, userLng: session.userLng }
+      };
+    }
   }
 
-  const bodyText = `*${combo.title}*\n${combo.description}\n₦${combo.price.toLocaleString('en-US')}`;
-  const imageUrl = await resolveImageUrl(combo);
-  const proceedButton = { type: 'reply', reply: { id: `proceed_qty_${idx}`, title: '✅ Proceed' } };
-
-  const reply = {
-    type: 'interactive',
-    interactive: {
-      type: 'button',
-      ...(imageUrl ? { header: { type: 'image', image: { link: imageUrl } } } : {}),
-      body: { text: bodyText },
-      action: { buttons: [proceedButton] }
+  const itemIdx = parseInt(trimmed.replace('item_', ''), 10);
+  if (trimmed.startsWith('item_') && Array.isArray(session.menuItems)) {
+    combo = session.menuItems[itemIdx] || null;
+    if (!combo) {
+      return {
+        replies: { type: 'text', body: `Please tap a menu item from the list above 👆` },
+        nextStage: STAGES.ORDER_SELECT_COMBO,
+        sessionData: { selectedVendor: session.selectedVendor, userLat: session.userLat, userLng: session.userLng }
+      };
     }
-  };
 
+    const bodyText = `*${combo.title || combo.name}*\n${combo.description || ''}${combo.price ? `\n₦${combo.price}` : ''}`;
+    const proceedButton = { type: 'reply', reply: { id: `proceed_qty_item_${itemIdx}`, title: '✅ Proceed' } };
+
+    const reply = {
+      type: 'interactive',
+      interactive: {
+        type: 'button',
+        body: { text: bodyText },
+        action: { buttons: [proceedButton] }
+      }
+    };
+
+    return {
+      replies: reply,
+      nextStage: STAGES.ORDER_SELECT_COMBO,
+      sessionData: { selectedVendor: session.selectedVendor, selectedComboIdx: itemIdx, userLat: session.userLat, userLng: session.userLng }
+    };
+  }
   return {
-    replies: reply,
+    replies: { type: 'text', body: `Please tap a meal combo from the list above 👆` },
     nextStage: STAGES.ORDER_SELECT_COMBO,
     sessionData: { selectedVendor: session.selectedVendor, userLat: session.userLat, userLng: session.userLng }
   };
@@ -1524,6 +1564,52 @@ function getOrderMenuListReply(bodyText = 'Menu') {
       id: `item_${idx}`,
       title: item.name.slice(0, 24),
       description: `${item.description} — ~${item.kcal} kcal`.slice(0, 72)
+    });
+  });
+
+  return {
+    type: 'interactive',
+    interactive: {
+      type: 'list',
+      body: { text: bodyText },
+      action: {
+        button: 'Choose',
+        sections: Object.entries(sections).map(([title, rows]) => ({ title, rows }))
+      }
+    }
+  };
+}
+
+function parseVendorMenu(menuText) {
+  if (!menuText) return [];
+  // Split into lines first; if single line with commas, split by commas.
+  const lines = menuText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const items = [];
+  if (lines.length === 1 && lines[0].includes(',')) {
+    lines[0].split(',').forEach(part => { if (part.trim()) items.push(part.trim()); });
+  } else {
+    for (const l of lines) items.push(l);
+  }
+
+  // Parse each item for an optional price like "name - 1500" or "name:1500"
+  return items.map((line) => {
+    const match = line.match(/^(.*?)\s*[-–—:]\s*(\d+(?:\.\d+)?)$/);
+    if (match) {
+      return { title: match[1].trim(), description: '', price: Math.round(Number(match[2])), name: match[1].trim() };
+    }
+    return { title: line, description: '', price: null, name: line };
+  });
+}
+
+function getVendorMenuListReply(items, bodyText = 'Menu') {
+  const sections = {};
+  items.forEach((item, idx) => {
+    const sectionTitle = 'Menu';
+    if (!sections[sectionTitle]) sections[sectionTitle] = [];
+    sections[sectionTitle].push({
+      id: `item_${idx}`,
+      title: (item.title || item.name).slice(0, 24),
+      description: ((item.description || '') + (item.price ? ` — ₦${item.price}` : '')).slice(0, 72)
     });
   });
 
@@ -1577,7 +1663,7 @@ async function createPaystackTransaction(email, amount) {
 // an exact delivery address, so stash the qty on the session and move to the
 // address step instead of paying here.
 function handleOrderEnterQty(text, name, session, shortName) {
-  const combo = ORDER_COMBOS[session.selectedComboIdx];
+  const combo = Array.isArray(session.menuItems) ? session.menuItems[session.selectedComboIdx] : ORDER_COMBOS[session.selectedComboIdx];
   const vendor = session.selectedVendor;
   const parsedQty = parseInt((text || '').replace(/[^0-9]/g, ''), 10);
   const qty = Number.isInteger(parsedQty) && parsedQty > 0 ? Math.min(parsedQty, 20) : 1;
@@ -1625,7 +1711,7 @@ function isLikelyValidAddress(text) {
 // `lastOrder` snapshot to the user's persistent profile so a future greeting
 // can offer a one-tap reorder.
 async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
-  const combo = ORDER_COMBOS[session.selectedComboIdx];
+  const combo = Array.isArray(session.menuItems) ? session.menuItems[session.selectedComboIdx] : ORDER_COMBOS[session.selectedComboIdx];
   const vendor = session.selectedVendor;
   const qty = session.qty;
 
@@ -1653,8 +1739,9 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
 
   const address = text.trim();
   const email = parseEmail(text) || `${name.replace(/\s+/g, '.').toLowerCase()}@example.com`;
-  const payment = await createPaystackTransaction(email, combo.price * qty);
-  const totalAmount = combo.price * qty;
+  const unitPrice = (combo && (combo.price || combo.price === 0)) ? Number(combo.price) : 0;
+  const payment = await createPaystackTransaction(email, unitPrice * qty);
+  const totalAmount = unitPrice * qty;
 
   const paymentMessage = payment
     ? `Please complete payment here: ${payment.authorization_url}`
@@ -1670,7 +1757,7 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
       isOpen: true
     },
     restaurantName: vendor.name,
-    items: [{ title: combo.title, qty, price: combo.price }],
+    items: [{ title: combo.title || combo.name, qty, price: unitPrice }],
     subtotal: totalAmount,
     deliveryFee: 0,
     total: totalAmount,
@@ -1846,18 +1933,47 @@ async function buildReply(text, name = 'friend', session = {}, phone) {
   if (!session.stage) {
     const orderIntent = detectOrderFoodRequest(normalized);
     if (orderIntent) {
-      const namedVendor = detectVendorNameFromText(text);
-      if (namedVendor) {
-        const vendor = { name: titleCase(namedVendor), vicinity: 'Restaurant specified by customer' };
-        return {
-          replies: [
-            { type: 'text', body: `Got it — ordering ${orderIntent} from *${vendor.name}*. Here's the menu 👇` },
-            getComboListReply()
-          ],
-          nextStage: STAGES.ORDER_SELECT_COMBO,
-          sessionData: { selectedVendor: vendor }
-        };
-      }
+        const namedVendor = detectVendorNameFromText(text);
+        if (namedVendor) {
+          const lookupName = titleCase(namedVendor);
+          // Try to find a registered vendor with this name and show their menu
+          let vendorRecord = null;
+          try {
+            const { data, error } = await supabase
+              .from('vendors')
+              .select('*')
+              .ilike('name', lookupName)
+              .maybeSingle();
+            if (!error && data) vendorRecord = data;
+          } catch (e) {
+            console.error('Vendor lookup failed:', e?.message || e);
+          }
+
+          if (vendorRecord && vendorRecord.menu) {
+            const menuItems = parseVendorMenu(vendorRecord.menu);
+            if (menuItems.length > 0) {
+              return {
+                replies: [
+                  { type: 'text', body: `Got it — ordering ${orderIntent} from *${vendorRecord.name}*. Here's the menu 👇` },
+                  getVendorMenuListReply(menuItems, `Menu for ${vendorRecord.name}`)
+                ],
+                nextStage: STAGES.ORDER_SELECT_COMBO,
+                sessionData: { selectedVendor: { name: vendorRecord.name, phone: vendorRecord.phone, vicinity: vendorRecord.vicinity }, menuItems }
+              };
+            }
+          }
+
+          // Fallback to free-form vendor (no registered menu)
+          const vendor = { name: lookupName, vicinity: 'Restaurant specified by customer' };
+          return {
+            replies: [
+              { type: 'text', body: `Got it — ordering ${orderIntent} from *${vendor.name}*. Here's the menu 👇` },
+              getComboListReply()
+            ],
+            nextStage: STAGES.ORDER_SELECT_COMBO,
+            sessionData: { selectedVendor: vendor }
+          };
+        }
 
       return {
         replies: [
