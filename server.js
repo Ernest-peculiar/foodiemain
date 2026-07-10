@@ -1,8 +1,6 @@
 require('dotenv').config();
 
 const express = require('express');
-const path = require('path');
-const fs = require('fs');
 const { createClient } = require('@supabase/supabase-js');
 const app = express();
 
@@ -13,7 +11,6 @@ const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const WHATSAPP_API_VERSION = process.env.WHATSAPP_API_VERSION || 'v22.0';
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
-const GOOGLE_CSE_ID = process.env.GOOGLE_CSE_ID;
 const GEOAPIFY_API_KEY = process.env.GEOAPIFY_API_KEY;
 const GROK_API_KEY = process.env.GROK_API_KEY;
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
@@ -39,7 +36,6 @@ if (!supabase) {
   console.warn('Supabase is not configured (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY missing) — falling back to in-memory sessions, and chat history will NOT be saved.');
 }
 
-const imageCache = new Map();
 // In-memory fallback only used when Supabase isn't configured (e.g. local dev
 // without a project set up yet). When Supabase IS configured it is the single
 // source of truth for session state — see getSession/setSession/deleteSession.
@@ -110,12 +106,10 @@ function mapMoodToCategory(userMoodText, fallback = 'light') {
   return fallback;
 }
 
-// Each entry's searchQuery is what we use to look up a real matching photo via
-// searchGoogleImage(). fallbackImageUrl only applies if that search is unavailable
-// or fails, so we're not stuck with one recycled stock photo per multiple dishes.
-// name/description/tags/kcal drive the caption text formatted to mirror the
-// "name, description, tags, kcal" card layout, since WhatsApp captions can't
-// render actual colored badges — this is the closest text approximation.
+// localImage/searchQuery/fallbackImageUrl are unused leftovers from the old
+// image-based cards (images were dropped — Google Image Search kept returning
+// wrong/unrelated photos). name/description/tags/kcal drive the text caption
+// via formatFoodCaption() instead.
 const MOOD_CATALOG = {
   light: [
     { name: 'Moi Moi & Pap', description: 'Steamed bean pudding with fermented corn porridge', tags: ['Healthy', 'Light', 'Affordable'], kcal: 280, localImage: 'moi-moi-pap.jpg', searchQuery: 'Nigerian moi moi pap', fallbackImageUrl: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=500' },
@@ -196,6 +190,22 @@ const ORDER_COMBOS = [
   { title: 'Rice & Meat', description: 'Rice with chicken stew and a side of greens', category: 'Rice & Meat', price: 2200 },
   { title: 'Rice, Meat & Fanta', description: 'Rice, meat stew, and Fanta to wash it down', category: 'Rice Combos', price: 2800 }
 ];
+
+// Loose mapping from our mood/category buckets (light, heavy, healthy, spicy,
+// affordable, surprise) to Geoapify's place-category taxonomy
+// (https://apidocs.geoapify.com/docs/places/#categories). Geoapify/OSM has no
+// true "spicy" or "light" category, so this is a best-effort bias toward
+// vendor *types* more likely to serve that kind of food (e.g. affordable ->
+// fast food, healthy -> cafe/vegetarian) — not a menu-level guarantee.
+const MOOD_PLACE_CATEGORIES = {
+  light: 'catering.cafe,catering.fast_food,catering.restaurant',
+  heavy: 'catering.restaurant,catering.fast_food',
+  healthy: 'catering.restaurant.vegetarian,catering.cafe,catering.restaurant',
+  spicy: 'catering.restaurant,catering.fast_food',
+  affordable: 'catering.fast_food,catering.cafe',
+  surprise: 'catering.restaurant,catering.fast_food,catering.cafe'
+};
+const DEFAULT_PLACE_CATEGORIES = 'catering.restaurant,catering.fast_food,catering.cafe';
 
 function parseEmail(text) {
   const match = (text || '').match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
@@ -364,7 +374,6 @@ async function logMessage(phone, direction, messageType, body, payload) {
 }
 
 app.use(express.json());
-app.use('/images', express.static(path.join(__dirname, 'public/images')));
 
 app.get('/', (req, res) => {
   res.send('Foodie WhatsApp bot is running.');
@@ -760,7 +769,7 @@ async function handleAskHealthGoals(text, name, session, shortName) {
         body: `✨ Based on what you told me — here are my top picks for you:\n\n*${selectedMood.charAt(0).toUpperCase() + selectedMood.slice(1)} Nigerian Foods:*`
       },
       ...(Array.isArray(recommendations) ? recommendations : [recommendations]),
-      getLocationRequestReply()
+      getLocationRequestReply(`Share your location so I can find restaurants near you that serve *${selectedMood}* meals 📍`)
     ],
     // Hang on to the mood so once we get coordinates we can search for
     // vendors that actually match what was just recommended.
@@ -1261,20 +1270,17 @@ async function buildMoodReply(category, shortName, lastMeal) {
     };
   }
 
-  const images = await Promise.all(
-    items.map(async (item) => {
-      const imageUrl = await resolveImageUrl(item);
-      return { type: 'image', imageUrl, caption: formatFoodCaption(item, basePrefix) };
-    })
-  );
-
   const headerText = category === 'surprise'
     ? `${basePrefix}Here's a surprise pick for you, ${shortName} 🎉`
     : `${basePrefix}Here are some ${category} options for you 👇`;
 
+  // Text-only list — no images. Image search was returning mismatched/wrong
+  // photos often enough that a clean text list is more trustworthy.
+  const listBody = items.map((item) => formatFoodCaption(item, '')).join('\n\n');
+
   return [
     { type: 'text', body: headerText },
-    ...images
+    { type: 'text', body: listBody }
   ];
 }
 
@@ -1316,53 +1322,6 @@ function getLocationRequestReply(bodyText = 'Share your location so I can show y
   };
 }
 
-function getLocalImageUrl(filename) {
-  return `${PUBLIC_URL}/images/${encodeURIComponent(filename)}`;
-}
-
-async function searchGoogleImage(query) {
-  if (!GOOGLE_API_KEY || !GOOGLE_CSE_ID) return null;
-  if (imageCache.has(query)) return imageCache.get(query);
-
-  try {
-    const url = `https://www.googleapis.com/customsearch/v1?key=${encodeURIComponent(GOOGLE_API_KEY)}&cx=${encodeURIComponent(GOOGLE_CSE_ID)}&searchType=image&q=${encodeURIComponent(query)}&num=1`;
-    const response = await fetch(url);
-    if (!response.ok) return null;
-    const data = await response.json();
-    const imageUrl = data.items?.[0]?.link;
-    if (imageUrl) {
-      imageCache.set(query, imageUrl);
-      return imageUrl;
-    }
-  } catch (error) {
-    console.error('Google image search failed:', error);
-  }
-
-  return null;
-}
-
-const localImageExistsCache = new Map();
-
-function localImageExists(filename) {
-  if (localImageExistsCache.has(filename)) return localImageExistsCache.get(filename);
-  const exists = fs.existsSync(path.join(__dirname, 'public/images', filename));
-  localImageExistsCache.set(filename, exists);
-  if (DEBUG && !exists) console.warn(`Local image missing: public/images/${filename}`);
-  return exists;
-}
-
-// Resolution order: your own curated photo (guaranteed to match) > a live
-// Google Image Search result > the hand-picked stock fallback. This means
-// dropping a correctly-named file into public/images/ immediately overrides
-// the other two sources for that dish, no code change needed.
-async function resolveImageUrl(item) {
-  if (item.localImage && localImageExists(item.localImage)) {
-    return getLocalImageUrl(item.localImage);
-  }
-  const searched = await searchGoogleImage(item.searchQuery);
-  return searched || item.fallbackImageUrl;
-}
-
 // Geoapify Places API (free tier: 3,000 requests/day, no billing account
 // required — see https://www.geoapify.com/places-api/). Data comes from
 // OpenStreetMap, so it won't have Google-style ratings/reviews, but it covers
@@ -1376,8 +1335,24 @@ async function findNearbyVendors(latitude, longitude, mood, orderIntent) {
     return null;
   }
 
+  const categories = MOOD_PLACE_CATEGORIES[mood] || DEFAULT_PLACE_CATEGORIES;
+  const vendors = await fetchGeoapifyPlaces(latitude, longitude, categories);
+
+  // If the mood-specific category search comes up empty, fall back to the
+  // broader restaurant/fast-food/cafe search rather than dead-ending —
+  // better to show *something* nearby than nothing at all.
+  if ((!vendors || vendors.length === 0) && categories !== DEFAULT_PLACE_CATEGORIES) {
+    return fetchGeoapifyPlaces(latitude, longitude, DEFAULT_PLACE_CATEGORIES);
+  }
+
+  return vendors;
+}
+
+// Note: Geoapify's filter/bias params take coordinates as lon,lat (GeoJSON
+// order), the opposite of the lat,lng order used elsewhere in this file —
+// easy to get backwards, so it's called out explicitly in the query string below.
+async function fetchGeoapifyPlaces(latitude, longitude, categories) {
   try {
-    const categories = 'catering.restaurant,catering.fast_food,catering.cafe';
     const url = `https://api.geoapify.com/v2/places`
       + `?categories=${encodeURIComponent(categories)}`
       + `&filter=circle:${longitude},${latitude},5000` // lon,lat,radius(m) — lon first
@@ -1442,14 +1417,15 @@ async function enrichVendor(vendor, userLat, userLng) {
   };
 }
 
-function formatVendorCard(v) {
+function formatVendorCard(v, mood) {
   const stars = v.rating ? '⭐'.repeat(Math.round(v.rating)) : '';
   const statusText = v.closingTime
     ? `Closes ${v.closingTime}`
     : (v.openNow === true ? 'Open now' : v.openNow === false ? 'Closed now' : 'Hours unknown');
   const distanceText = v.distanceKm != null ? `${v.distanceKm.toFixed(1)} km away` : '';
+  const moodTag = mood ? `\n🍽 Good for: ${mood.charAt(0).toUpperCase() + mood.slice(1)} cravings` : '';
 
-  return `*${v.name}*\n${statusText} · ${v.serviceText}${stars ? ` ${stars}` : ''}\n${distanceText}`.trim();
+  return `*${v.name}*\n${statusText} · ${v.serviceText}${stars ? ` ${stars}` : ''}\n${distanceText}${moodTag}`.trim();
 }
 
 // Quick-reply buttons shown after vendor cards, so the user has an obvious
@@ -1508,7 +1484,14 @@ async function buildVendorLocationReply(latitude, longitude, mood, orderIntent) 
   const topVendors = vendors.slice(0, 3);
   const enriched = await Promise.all(topVendors.map((v) => enrichVendor(v, latitude, longitude)));
 
-  const replies = enriched.map((v) => ({ type: 'text', body: formatVendorCard(v) }));
+  const introText = mood
+    ? `Here's where you can get *${mood}* meals near you 👇`
+    : `Here's what's nearby 👇`;
+
+  const replies = [
+    { type: 'text', body: introText },
+    ...enriched.map((v) => ({ type: 'text', body: formatVendorCard(v, mood) }))
+  ];
 
   for (const v of enriched) {
     if (v.lat != null && v.lng != null) {
