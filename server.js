@@ -1213,29 +1213,36 @@ async function buildReply(text, name = 'friend', session = {}, phone) {
 
   if (normalized.includes('hungry')) return handleHungry();
 
-  const orderIntent = detectOrderFoodRequest(normalized);
-  if (orderIntent) {
-    const namedVendor = detectVendorNameFromText(text);
-    if (namedVendor) {
-      const vendor = { name: titleCase(namedVendor), vicinity: 'Restaurant specified by customer' };
+  // Only treat free text like "rice" or "I want jollof" as an order-intent
+  // shortcut when the user ISN'T already mid-flow. Otherwise this was
+  // hijacking structured answers — e.g. typing "Rice" to answer "What did
+  // you last eat?" would derail straight into the order flow instead of
+  // reaching the mood-picker stage handler below.
+  if (!session.stage) {
+    const orderIntent = detectOrderFoodRequest(normalized);
+    if (orderIntent) {
+      const namedVendor = detectVendorNameFromText(text);
+      if (namedVendor) {
+        const vendor = { name: titleCase(namedVendor), vicinity: 'Restaurant specified by customer' };
+        return {
+          replies: [
+            { type: 'text', body: `Got it — ordering ${orderIntent} from *${vendor.name}*. Here are rice meal combos, pick one:` },
+            getComboListReply()
+          ],
+          nextStage: STAGES.ORDER_SELECT_COMBO,
+          sessionData: { selectedVendor: vendor }
+        };
+      }
+
       return {
         replies: [
-          { type: 'text', body: `Got it — ordering ${orderIntent} from *${vendor.name}*. Here are rice meal combos, pick one:` },
-          getComboListReply()
+          { type: 'text', body: `Got it! I can search restaurants nearby that offer ${orderIntent}. Share your location or type your area — or just tell me the restaurant name if you already know where you're ordering from.` },
+          getLocationRequestReply()
         ],
-        nextStage: STAGES.ORDER_SELECT_COMBO,
-        sessionData: { selectedVendor: vendor }
+        nextStage: STAGES.ORDER_AWAIT_LOCATION,
+        sessionData: { orderIntent }
       };
     }
-
-    return {
-      replies: [
-        { type: 'text', body: `Got it! I can search restaurants nearby that offer ${orderIntent}. Share your location or type your area — or just tell me the restaurant name if you already know where you're ordering from.` },
-        getLocationRequestReply()
-      ],
-      nextStage: STAGES.ORDER_AWAIT_LOCATION,
-      sessionData: { orderIntent }
-    };
   }
 
   const handler = STAGE_HANDLERS[session.stage];
