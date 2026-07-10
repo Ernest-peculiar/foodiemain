@@ -1,6 +1,8 @@
 require('dotenv').config();
 
 const express = require('express');
+const path = require('path');
+const fs = require('fs');
 const { createClient } = require('@supabase/supabase-js');
 const app = express();
 
@@ -184,11 +186,13 @@ function getOrderMenuItemByIndex(idx) {
   return ORDER_MENU_ITEMS[idx];
 }
 
+// localImage: drop a matching file into public/images/ to override the
+// fallbackImageUrl stock photo for that combo — see resolveImageUrl().
 const ORDER_COMBOS = [
-  { title: 'Plain Rice', description: 'Steamed rice with tomato stew and salad', category: 'Rice', price: 1500 },
-  { title: 'Rice & Beans', description: 'Rice served with beans and plantain', category: 'Rice & Beans', price: 1700 },
-  { title: 'Rice & Meat', description: 'Rice with chicken stew and a side of greens', category: 'Rice & Meat', price: 2200 },
-  { title: 'Rice, Meat & Fanta', description: 'Rice, meat stew, and Fanta to wash it down', category: 'Rice Combos', price: 2800 }
+  { title: 'Plain Rice', description: 'Steamed rice with tomato stew and salad', category: 'Rice', price: 1500, localImage: 'combo-plain-rice.jpg', fallbackImageUrl: 'https://images.unsplash.com/photo-1567620905732-2d1ec7ab7445?w=500' },
+  { title: 'Rice & Beans', description: 'Rice served with beans and plantain', category: 'Rice & Beans', price: 1700, localImage: 'combo-rice-beans.jpg', fallbackImageUrl: 'https://images.unsplash.com/photo-1626082927389-6cd097cee6a6?w=500' },
+  { title: 'Rice & Meat', description: 'Rice with chicken stew and a side of greens', category: 'Rice & Meat', price: 2200, localImage: 'combo-rice-meat.jpg', fallbackImageUrl: 'https://images.unsplash.com/photo-1551632786-de41ec16a01d?w=500' },
+  { title: 'Rice, Meat & Fanta', description: 'Rice, meat stew, and Fanta to wash it down', category: 'Rice Combos', price: 2800, localImage: 'combo-rice-meat-fanta.jpg', fallbackImageUrl: 'https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=500' }
 ];
 
 // Loose mapping from our mood/category buckets (light, heavy, healthy, spicy,
@@ -374,6 +378,7 @@ async function logMessage(phone, direction, messageType, body, payload) {
 }
 
 app.use(express.json());
+app.use('/images', express.static(path.join(__dirname, 'public/images')));
 
 app.get('/', (req, res) => {
   res.send('Foodie WhatsApp bot is running.');
@@ -631,7 +636,7 @@ function handleResumePrompt(session, shortName) {
 // Re-sends whatever prompt/options belong to the user's current stage,
 // without consuming their next message as input to that stage — used when
 // they tap "Resume" from handleResumePrompt.
-function getStageResumeReply(session) {
+async function getStageResumeReply(session) {
   switch (session.stage) {
     case STAGES.ASK_LAST_MEAL:
       return { type: 'text', body: `Where were we — what did you last eat?` };
@@ -648,7 +653,7 @@ function getStageResumeReply(session) {
         ? [{ type: 'text', body: `Here's what was nearby 👇 Tap a restaurant to choose.` }, getRestaurantListReply(session.nearbyVendors)]
         : { type: 'text', body: `Which restaurant would you like to order from?` };
     case STAGES.ORDER_SELECT_COMBO:
-      return [{ type: 'text', body: `Pick a meal combo:` }, getComboListReply()];
+      return [{ type: 'text', body: `Here's the menu again 👇` }, ...(await buildComboImageReplies()), getComboListReply()];
     case STAGES.ORDER_ENTER_QTY:
       return { type: 'text', body: `How many would you like? (e.g. "2")` };
     case STAGES.ORDER_AWAIT_ADDRESS:
@@ -867,7 +872,7 @@ function getRestaurantListReply(vendors, bodyText = 'Nearby restaurants') {
 // We don't have real per-restaurant menus (Places doesn't expose one), so
 // either way we offer our curated dish list against whichever vendor we end
 // up with.
-function handleOrderSelectRestaurant(text, name, session) {
+async function handleOrderSelectRestaurant(text, name, session) {
   const trimmed = (text || '').trim();
   const idx = parseInt(trimmed.replace('vendor_', ''), 10);
   const vendorFromList = Number.isInteger(idx) && trimmed.startsWith('vendor_') ? session.nearbyVendors?.[idx] : null;
@@ -888,14 +893,31 @@ function handleOrderSelectRestaurant(text, name, session) {
     };
   }
 
+  const comboImages = await buildComboImageReplies();
+
   return {
     replies: [
-      { type: 'text', body: `Great pick! I found rice and rice-combo meals for *${vendor.name}*. Pick one:` },
+      { type: 'text', body: `Great pick! Here's the menu for *${vendor.name}* 👇` },
+      ...comboImages,
+      { type: 'text', body: `Pick one below to order:` },
       getComboListReply()
     ],
     nextStage: STAGES.ORDER_SELECT_COMBO,
     sessionData: { selectedVendor: vendor, userLat: session.userLat, userLng: session.userLng }
   };
+}
+
+// One message per combo — an image with a caption — mirroring how vendor
+// info cards and location pins are each sent as their own message, followed
+// by the tappable list to actually make the selection.
+async function buildComboImageReplies() {
+  return Promise.all(
+    ORDER_COMBOS.map(async (combo) => {
+      const imageUrl = await resolveImageUrl(combo);
+      const caption = `*${combo.title}*\n${combo.description}\n₦${combo.price.toLocaleString('en-US')}`;
+      return imageUrl ? { type: 'image', imageUrl, caption } : { type: 'text', body: caption };
+    })
+  );
 }
 
 function getComboListReply(bodyText = 'Rice meal combos available') {
@@ -1195,7 +1217,7 @@ async function buildReply(text, name = 'friend', session = {}, phone) {
   if (normalized === 'resume_flow') {
     // Re-send the current stage's prompt without consuming this tap as input
     // to that stage, and keep the session exactly as it was.
-    return { replies: getStageResumeReply(session), nextStage: session.stage, sessionData: session };
+    return { replies: await getStageResumeReply(session), nextStage: session.stage, sessionData: session };
   }
   if (normalized === 'try_different_meals') return handleHungry();
   if (normalized === 'get_meal_plan') return handleMealPlanPlaceholder();
@@ -1231,9 +1253,12 @@ async function buildReply(text, name = 'friend', session = {}, phone) {
       const namedVendor = detectVendorNameFromText(text);
       if (namedVendor) {
         const vendor = { name: titleCase(namedVendor), vicinity: 'Restaurant specified by customer' };
+        const comboImages = await buildComboImageReplies();
         return {
           replies: [
-            { type: 'text', body: `Got it — ordering ${orderIntent} from *${vendor.name}*. Here are rice meal combos, pick one:` },
+            { type: 'text', body: `Got it — ordering ${orderIntent} from *${vendor.name}*. Here's the menu 👇` },
+            ...comboImages,
+            { type: 'text', body: `Pick one below to order:` },
             getComboListReply()
           ],
           nextStage: STAGES.ORDER_SELECT_COMBO,
@@ -1334,6 +1359,31 @@ function getLocationRequestReply(bodyText = 'Share your location so I can show y
       action: { name: 'send_location' }
     }
   };
+}
+
+const localImageExistsCache = new Map();
+
+function localImageExists(filename) {
+  if (localImageExistsCache.has(filename)) return localImageExistsCache.get(filename);
+  const exists = fs.existsSync(path.join(__dirname, 'public/images', filename));
+  localImageExistsCache.set(filename, exists);
+  if (DEBUG && !exists) console.warn(`Local image missing: public/images/${filename}`);
+  return exists;
+}
+
+function getLocalImageUrl(filename) {
+  return `${PUBLIC_URL}/images/${encodeURIComponent(filename)}`;
+}
+
+// Curated images only — a local file you drop into public/images/ (guaranteed
+// to match), falling back to a hand-picked stock photo if that file isn't
+// there yet. No live image search: that was returning wrong/unrelated photos
+// often enough to be worse than no image at all.
+async function resolveImageUrl(item) {
+  if (item.localImage && localImageExists(item.localImage)) {
+    return getLocalImageUrl(item.localImage);
+  }
+  return item.fallbackImageUrl || null;
 }
 
 // Geoapify Places API (free tier: 3,000 requests/day, no billing account
