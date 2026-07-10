@@ -737,12 +737,23 @@ async function getSession(phone) {
   }
   if (!data) return {};
 
-  return { stage: data.stage || undefined, ...(data.session_data || {}) };
+  // IMPORTANT: `stage` (the DB column) is the source of truth. Spread
+  // `session_data` FIRST and apply `stage` LAST, so a stale `stage` key that
+  // may be sitting inside the session_data JSON blob (e.g. from a caller
+  // doing `{ ...session, someField }` when building sessionData) can never
+  // silently override the real stage. Previously this was the other way
+  // round, which caused stage transitions to randomly get reverted (e.g.
+  // vendors stuck being asked for their restaurant name again after they'd
+  // already sent their menu).
+  return { ...(data.session_data || {}), stage: data.stage || undefined };
 }
 
 async function setSession(phone, stage, sessionData = {}) {
   if (!supabase) {
-    sessions.set(phone, { stage, ...sessionData });
+    // Same fix as getSession above: apply `stage` LAST so the explicit
+    // stage argument always wins over any stale `stage` key hiding inside
+    // sessionData.
+    sessions.set(phone, { ...sessionData, stage });
     return;
   }
 
