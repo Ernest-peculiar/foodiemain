@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
+const { createClient } = require('@supabase/supabase-js');
 const app = express();
 
 const PORT = process.env.PORT || 3000;
@@ -23,7 +24,24 @@ const DEBUG = process.env.DEBUG === 'true';
 // session with the bot (or a template message — see sendOrderNotification()).
 const ORDER_NOTIFY_NUMBER = process.env.ORDER_NOTIFY_NUMBER;
 
+// Supabase persistence: conversation stage/session state + a full inbound/
+// outbound chat log. Use the SERVICE ROLE key here (never the anon key) since
+// this runs server-side and needs to bypass RLS to write on behalf of any
+// user. See supabase-schema.sql for the tables this expects.
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const supabase = (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY)
+  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } })
+  : null;
+
+if (!supabase) {
+  console.warn('Supabase is not configured (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY missing) — falling back to in-memory sessions, and chat history will NOT be saved.');
+}
+
 const imageCache = new Map();
+// In-memory fallback only used when Supabase isn't configured (e.g. local dev
+// without a project set up yet). When Supabase IS configured it is the single
+// source of truth for session state — see getSession/setSession/deleteSession.
 const sessions = new Map();
 
 // Centralizing stage names avoids typo bugs like 'askLastmeal' vs 'askLastMeal'
@@ -210,6 +228,72 @@ function detectOrderFoodRequest(text) {
   return null;
 }
 
+// --- Persistence (Supabase) ------------------------------------------------
+// Session state (`sessions` table) drives the conversation flow and now
+// survives restarts/deploys. `messages` is a full inbound/outbound chat log
+// for analytics, support, and debugging. Both degrade gracefully to the old
+// in-memory Map (session only, no chat log) if Supabase isn't configured, so
+// local dev without a Supabase project still works.
+
+async function getSession(phone) {
+  if (!supabase) return sessions.get(phone) || {};
+
+  const { data, error } = await supabase
+    .from('sessions')
+    .select('stage, session_data')
+    .eq('phone', phone)
+    .maybeSingle();
+
+  if (error) {
+    console.error('Supabase getSession failed:', error.message);
+    return {};
+  }
+  if (!data) return {};
+
+  return { stage: data.stage || undefined, ...(data.session_data || {}) };
+}
+
+async function setSession(phone, stage, sessionData = {}) {
+  if (!supabase) {
+    sessions.set(phone, { stage, ...sessionData });
+    return;
+  }
+
+  const { error } = await supabase
+    .from('sessions')
+    .upsert({ phone, stage, session_data: sessionData, updated_at: new Date().toISOString() }, { onConflict: 'phone' });
+
+  if (error) console.error('Supabase setSession failed:', error.message);
+}
+
+async function deleteSession(phone) {
+  if (!supabase) {
+    sessions.delete(phone);
+    return;
+  }
+
+  const { error } = await supabase.from('sessions').delete().eq('phone', phone);
+  if (error) console.error('Supabase deleteSession failed:', error.message);
+}
+
+// Logs one line of chat history. `payload` keeps the raw WhatsApp
+// message/reply object (jsonb) alongside a flattened `body` for quick
+// reading/searching. Silently no-ops if Supabase isn't configured — chat
+// history is a nice-to-have, it should never block the bot from replying.
+async function logMessage(phone, direction, messageType, body, payload) {
+  if (!supabase) return;
+
+  const { error } = await supabase.from('messages').insert({
+    phone,
+    direction,
+    message_type: messageType || 'text',
+    body: body || null,
+    payload: payload || null
+  });
+
+  if (error) console.error('Supabase logMessage failed:', error.message);
+}
+
 app.use(express.json());
 app.use('/images', express.static(path.join(__dirname, 'public/images')));
 
@@ -256,12 +340,14 @@ app.post('/webhook', async (req, res) => {
 async function handleIncomingMessage(message, value) {
   const from = message.from;
   const senderName = value.contacts?.[0]?.profile?.name || 'Foodie friend';
-  const session = sessions.get(from) || {};
+  const session = await getSession(from);
 
   let result;
 
   if (message.type === 'location' && message.location) {
     const { latitude, longitude } = message.location;
+    await logMessage(from, 'inbound', 'location', `${latitude},${longitude}`, message.location);
+
     if (session.stage === STAGES.ORDER_AWAIT_LOCATION) {
       result = await handleOrderLocationReceived(latitude, longitude, session);
     } else {
@@ -278,6 +364,7 @@ async function handleIncomingMessage(message, value) {
       || '';
 
     if (DEBUG) console.log(`Message from ${from}: ${text}`);
+    await logMessage(from, 'inbound', message.type || 'text', text, message);
     result = await buildReply(text, senderName, session);
   }
 
@@ -285,9 +372,9 @@ async function handleIncomingMessage(message, value) {
 
   if (from) {
     if (result.nextStage) {
-      sessions.set(from, { stage: result.nextStage, ...(result.sessionData || {}) });
+      await setSession(from, result.nextStage, result.sessionData || {});
     } else if (session.stage) {
-      sessions.delete(from);
+      await deleteSession(from);
     }
   }
 
@@ -1244,6 +1331,8 @@ async function sendWhatsAppMessage(to, reply) {
   } else if (DEBUG) {
     console.log('✅ Message sent successfully!', data);
   }
+
+  await logMessage(to, 'outbound', reply.type, reply.body || reply.caption || null, reply);
 }
 
 app.listen(PORT, () => {
