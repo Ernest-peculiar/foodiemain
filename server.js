@@ -939,11 +939,42 @@ function getComboListReply(bodyText = 'Rice meal combos available') {
   };
 }
 
-// Step 3: combo picked. Send the image of THAT combo (caption doubles as the
-// quantity prompt), then ask quantity as free text.
+// Step 3 is two-phase, both handled by this same function (still one stage,
+// ORDER_SELECT_COMBO, so a stray "hi" mid-way still resumes correctly):
+//
+//   3a. User taps a combo from the list (id "combo_<idx>") -> show that
+//       combo's image with a body caption and a single "✅ Proceed" button
+//       (id "proceed_qty_<idx>"). We stay on ORDER_SELECT_COMBO — nothing is
+//       confirmed yet.
+//   3b. User taps "Proceed" (id "proceed_qty_<idx>") -> now ask for quantity
+//       as free text and advance to ORDER_ENTER_QTY.
+//
+// WhatsApp interactive "button" messages support an image header, so the
+// photo and the Proceed button travel together as one message.
 async function handleOrderSelectCombo(text, name, session) {
-  const idx = parseInt((text || '').replace('combo_', ''), 10);
-  const combo = Number.isInteger(idx) ? ORDER_COMBOS[idx] : null;
+  const trimmed = (text || '').trim();
+
+  if (trimmed.startsWith('proceed_qty_')) {
+    const idx = parseInt(trimmed.replace('proceed_qty_', ''), 10);
+    const combo = Number.isInteger(idx) ? ORDER_COMBOS[idx] : null;
+
+    if (!combo) {
+      return {
+        replies: { type: 'text', body: `Something went wrong — please pick a meal combo again 👆` },
+        nextStage: STAGES.ORDER_SELECT_COMBO,
+        sessionData: { selectedVendor: session.selectedVendor, userLat: session.userLat, userLng: session.userLng }
+      };
+    }
+
+    return {
+      replies: { type: 'text', body: `*${combo.title}* is a great choice! How many would you like? (e.g. "2")` },
+      nextStage: STAGES.ORDER_ENTER_QTY,
+      sessionData: { selectedVendor: session.selectedVendor, selectedComboIdx: idx, userLat: session.userLat, userLng: session.userLng }
+    };
+  }
+
+  const idx = parseInt(trimmed.replace('combo_', ''), 10);
+  const combo = Number.isInteger(idx) && trimmed.startsWith('combo_') ? ORDER_COMBOS[idx] : null;
 
   if (!combo) {
     return {
@@ -953,14 +984,24 @@ async function handleOrderSelectCombo(text, name, session) {
     };
   }
 
-  const caption = `*${combo.title}* is a great choice! How many would you like? (e.g. "2")`;
+  const bodyText = `*${combo.title}*\n${combo.description}\n₦${combo.price.toLocaleString('en-US')}`;
   const imageUrl = await resolveImageUrl(combo);
-  const reply = imageUrl ? { type: 'image', imageUrl, caption } : { type: 'text', body: caption };
+  const proceedButton = { type: 'reply', reply: { id: `proceed_qty_${idx}`, title: '✅ Proceed' } };
+
+  const reply = {
+    type: 'interactive',
+    interactive: {
+      type: 'button',
+      ...(imageUrl ? { header: { type: 'image', image: { link: imageUrl } } } : {}),
+      body: { text: bodyText },
+      action: { buttons: [proceedButton] }
+    }
+  };
 
   return {
     replies: reply,
-    nextStage: STAGES.ORDER_ENTER_QTY,
-    sessionData: { selectedVendor: session.selectedVendor, selectedComboIdx: idx, userLat: session.userLat, userLng: session.userLng }
+    nextStage: STAGES.ORDER_SELECT_COMBO,
+    sessionData: { selectedVendor: session.selectedVendor, userLat: session.userLat, userLng: session.userLng }
   };
 }
 
