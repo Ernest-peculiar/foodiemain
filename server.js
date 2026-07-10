@@ -903,7 +903,23 @@ async function handleIncomingMessage(message, value) {
     || message.interactive?.list_reply?.title
     || '';
 
-  if (session.stage === 'vendorAwaitName' || session.stage === STAGES.VENDOR_AWAIT_MENU || session.stage === 'driverAwaitName') {
+  // "Register vendor" / "Register driver" are explicit, deliberate actions —
+  // a button tap or a typed command — and must always be honored as a fresh
+  // registration request, even if the user happens to be mid-way through
+  // some other flow (including a DIFFERENT in-progress registration).
+  //
+  // This check must run BEFORE the stage-based routing below. Previously,
+  // if a user tapped "Register vendor" (stage -> vendorAwaitName) and then
+  // tapped "Register driver" by mistake, that button's payload
+  // ("register_driver") wasn't recognized as a command at all — it was
+  // swallowed as free text and used AS the restaurant name, corrupting the
+  // vendor record ("✅ Registered register_driver as a vendor.").
+  const registrationReply = await handleRegistrationFlow(text, from, session);
+
+  if (registrationReply) {
+    await logMessage(from, 'inbound', message.type || 'text', text, message);
+    result = registrationReply;
+  } else if (session.stage === 'vendorAwaitName' || session.stage === STAGES.VENDOR_AWAIT_MENU || session.stage === 'driverAwaitName') {
     result = await finalizeRegistration(text, from, session);
   } else if (session.stage === STAGES.DRIVER_AWAIT_PHOTO) {
     result = await handleDeliveryPhotoMessage(message, from, session);
@@ -927,23 +943,18 @@ async function handleIncomingMessage(message, value) {
     if (DEBUG) console.log(`Message from ${from}: ${text}`);
     await logMessage(from, 'inbound', message.type || 'text', text, message);
 
-    const registrationReply = await handleRegistrationFlow(text, from, session);
-    if (registrationReply) {
-      result = registrationReply;
+    const availabilityReply = await handleAvailabilityCommands(text, from, session);
+    if (availabilityReply) {
+      result = availabilityReply;
+    } else if (role === 'vendor') {
+      const dispatchReply = await handleDispatchPayload(text, from, session);
+      result = dispatchReply || { replies: { type: 'text', body: 'Reply open/close to change availability.' }, nextStage: null, sessionData: session };
+    } else if (role === 'driver') {
+      const dispatchReply = await handleDispatchPayload(text, from, session);
+      result = dispatchReply || { replies: { type: 'text', body: 'Reply online/offline to toggle availability.' }, nextStage: null, sessionData: session };
     } else {
-      const availabilityReply = await handleAvailabilityCommands(text, from, session);
-      if (availabilityReply) {
-        result = availabilityReply;
-      } else if (role === 'vendor') {
-        const dispatchReply = await handleDispatchPayload(text, from, session);
-        result = dispatchReply || { replies: { type: 'text', body: 'Reply open/close to change availability.' }, nextStage: null, sessionData: session };
-      } else if (role === 'driver') {
-        const dispatchReply = await handleDispatchPayload(text, from, session);
-        result = dispatchReply || { replies: { type: 'text', body: 'Reply online/offline to toggle availability.' }, nextStage: null, sessionData: session };
-      } else {
-        const dispatchReply = await handleDispatchPayload(text, from, session);
-        result = dispatchReply || await buildReply(text, senderName, session, from);
-      }
+      const dispatchReply = await handleDispatchPayload(text, from, session);
+      result = dispatchReply || await buildReply(text, senderName, session, from);
     }
   }
 
