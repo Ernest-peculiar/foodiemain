@@ -8,6 +8,14 @@ const app = express();
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC_URL = process.env.PUBLIC_URL || `http://localhost:${PORT}`;
+if (!/^https:\/\//i.test(PUBLIC_URL) || /localhost|127\.0\.0\.1/i.test(PUBLIC_URL)) {
+  console.warn(
+    `⚠️  PUBLIC_URL is "${PUBLIC_URL}" — this is the URL WhatsApp's servers use to fetch images you send, `
+    + `and they can't reach localhost or a plain http:// address. Local images will silently fail to display `
+    + `until PUBLIC_URL is set (in your .env) to a real public HTTPS URL — your deployed domain, or an https `
+    + `tunnel like ngrok during local dev.`
+  );
+}
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
@@ -108,45 +116,44 @@ function mapMoodToCategory(userMoodText, fallback = 'light') {
   return fallback;
 }
 
-// localImage/searchQuery/fallbackImageUrl are unused leftovers from the old
-// image-based cards (images were dropped — Google Image Search kept returning
-// wrong/unrelated photos). name/description/tags/kcal drive the text caption
-// via formatFoodCaption() instead.
+// localImage is unused for now (mood recommendations are text-only, see
+// buildMoodReply) but kept in case per-dish images get added back here too —
+// same local-file-only convention as ORDER_COMBOS, no external URLs.
 const MOOD_CATALOG = {
   light: [
-    { name: 'Moi Moi & Pap', description: 'Steamed bean pudding with fermented corn porridge', tags: ['Healthy', 'Light', 'Affordable'], kcal: 280, localImage: 'moi-moi-pap.jpg', searchQuery: 'Nigerian moi moi pap', fallbackImageUrl: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=500' },
-    { name: 'Akara & Fried Plantain', description: 'Crispy bean fritters with sweet fried plantain', tags: ['Light', 'Affordable'], kcal: 310, localImage: 'akara-plantain.jpg', searchQuery: 'Nigerian akara plantain', fallbackImageUrl: 'https://images.unsplash.com/photo-1585238341710-4913d3ca7cc0?w=500' },
-    { name: 'Grilled Fish Salad', description: 'Grilled fish over a fresh salad with light Nigerian flavors', tags: ['Light', 'Healthy'], kcal: 340, localImage: 'grilled-fish-salad.jpg', searchQuery: 'grilled fish salad bowl', fallbackImageUrl: 'https://images.unsplash.com/photo-1540189549336-e6e99c3679fe?w=500' },
-    { name: 'Steamed Veg & Lean Protein', description: 'Steamed vegetables with a lean protein of choice', tags: ['Healthy', 'Light'], kcal: 320, localImage: 'steamed-veg-protein.jpg', searchQuery: 'steamed vegetables lean protein plate', fallbackImageUrl: 'https://images.unsplash.com/photo-1512621776951-a57141f2eefd?w=500' },
-    { name: 'Fruit & Nut Bowl', description: 'Fresh fruit and nut bowl with a ginger syrup drizzle', tags: ['Light', 'Healthy'], kcal: 250, localImage: 'fruit-nut-bowl.jpg', searchQuery: 'fruit nut bowl ginger', fallbackImageUrl: 'https://images.unsplash.com/photo-1599599810694-b5ac1ea27830?w=500' }
+    { name: 'Moi Moi & Pap', description: 'Steamed bean pudding with fermented corn porridge', tags: ['Healthy', 'Light', 'Affordable'], kcal: 280, localImage: 'moi-moi-pap.jpg' },
+    { name: 'Akara & Fried Plantain', description: 'Crispy bean fritters with sweet fried plantain', tags: ['Light', 'Affordable'], kcal: 310, localImage: 'akara-plantain.jpg' },
+    { name: 'Grilled Fish Salad', description: 'Grilled fish over a fresh salad with light Nigerian flavors', tags: ['Light', 'Healthy'], kcal: 340, localImage: 'grilled-fish-salad.jpg' },
+    { name: 'Steamed Veg & Lean Protein', description: 'Steamed vegetables with a lean protein of choice', tags: ['Healthy', 'Light'], kcal: 320, localImage: 'steamed-veg-protein.jpg' },
+    { name: 'Fruit & Nut Bowl', description: 'Fresh fruit and nut bowl with a ginger syrup drizzle', tags: ['Light', 'Healthy'], kcal: 250, localImage: 'fruit-nut-bowl.jpg' }
   ],
   heavy: [
-    { name: 'Pounded Yam & Egusi', description: 'Rich, comforting egusi soup with pounded yam', tags: ['Heavy', 'Filling'], kcal: 750, localImage: 'pounded-yam-egusi.jpg', searchQuery: 'pounded yam egusi soup', fallbackImageUrl: 'https://images.unsplash.com/photo-1645112411341-6c4ee36b2e5d?w=500' },
-    { name: 'Oha Soup & Fufu', description: 'Wholesome oha soup with fufu and deep, savory flavor', tags: ['Heavy', 'Filling'], kcal: 700, localImage: 'oha-soup-fufu.jpg', searchQuery: 'oha soup fufu Nigerian', fallbackImageUrl: 'https://images.unsplash.com/photo-1604909052743-94e838986d24?w=500' },
-    { name: 'Ogbono & Eba', description: 'Thick ogbono soup with eba — very satisfying', tags: ['Heavy'], kcal: 680, localImage: 'ogbono-eba.jpg', searchQuery: 'ogbono soup eba Nigerian', fallbackImageUrl: 'https://images.unsplash.com/photo-1631515243349-e0cb75fb8d3a?w=500' },
-    { name: 'Fried Rice & Chicken Stew', description: 'Loaded fried rice served with chicken stew', tags: ['Heavy', 'Filling'], kcal: 620, localImage: 'fried-rice-chicken-stew.jpg', searchQuery: 'Nigerian fried rice chicken stew', fallbackImageUrl: 'https://images.unsplash.com/photo-1551632786-de41ec16a01d?w=500' },
-    { name: 'Suya Platter', description: 'Bold, hearty suya platter with spicy beef', tags: ['Heavy', 'Spicy'], kcal: 590, localImage: 'suya-platter.jpg', searchQuery: 'suya beef skewers platter', fallbackImageUrl: 'https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=500' }
+    { name: 'Pounded Yam & Egusi', description: 'Rich, comforting egusi soup with pounded yam', tags: ['Heavy', 'Filling'], kcal: 750, localImage: 'pounded-yam-egusi.jpg' },
+    { name: 'Oha Soup & Fufu', description: 'Wholesome oha soup with fufu and deep, savory flavor', tags: ['Heavy', 'Filling'], kcal: 700, localImage: 'oha-soup-fufu.jpg' },
+    { name: 'Ogbono & Eba', description: 'Thick ogbono soup with eba — very satisfying', tags: ['Heavy'], kcal: 680, localImage: 'ogbono-eba.jpg' },
+    { name: 'Fried Rice & Chicken Stew', description: 'Loaded fried rice served with chicken stew', tags: ['Heavy', 'Filling'], kcal: 620, localImage: 'fried-rice-chicken-stew.jpg' },
+    { name: 'Suya Platter', description: 'Bold, hearty suya platter with spicy beef', tags: ['Heavy', 'Spicy'], kcal: 590, localImage: 'suya-platter.jpg' }
   ],
   healthy: [
-    { name: 'Grilled Fish & Greens', description: 'Grilled fish with steamed greens — protein-rich', tags: ['Healthy'], kcal: 380, localImage: 'grilled-fish-greens.jpg', searchQuery: 'grilled fish steamed greens', fallbackImageUrl: 'https://images.unsplash.com/photo-1519708227418-c8fd9a32b7a2?w=500' },
-    { name: 'Okra Soup & Light Swallow', description: 'Okra soup with fish and a light swallow', tags: ['Healthy'], kcal: 420, localImage: 'okra-soup.jpg', searchQuery: 'Nigerian okra soup fish', fallbackImageUrl: 'https://images.unsplash.com/photo-1607330289024-1535c6b4e1c1?w=500' },
-    { name: 'Boiled Plantain & Lean Stew', description: 'Balanced, wholesome boiled plantain with lean stew', tags: ['Healthy'], kcal: 400, localImage: 'boiled-plantain-stew.jpg', searchQuery: 'boiled plantain stew', fallbackImageUrl: 'https://images.unsplash.com/photo-1599599810694-b5ac1ea27830?w=500' },
-    { name: 'Vegetable Soup & Lean Protein', description: 'Fresh vegetable soup with a lean protein', tags: ['Healthy'], kcal: 410, localImage: 'vegetable-soup.jpg', searchQuery: 'Nigerian vegetable soup', fallbackImageUrl: 'https://images.unsplash.com/photo-1540189549336-e6e99c3679fe?w=500' },
-    { name: 'Fruit Bowl & Honey', description: 'Natural, energizing fruit bowl with nuts and honey', tags: ['Healthy', 'Light'], kcal: 260, localImage: 'fruit-bowl-honey.jpg', searchQuery: 'fruit bowl nuts honey', fallbackImageUrl: 'https://images.unsplash.com/photo-1490474418585-ba9bad8fd0ea?w=500' }
+    { name: 'Grilled Fish & Greens', description: 'Grilled fish with steamed greens — protein-rich', tags: ['Healthy'], kcal: 380, localImage: 'grilled-fish-greens.jpg' },
+    { name: 'Okra Soup & Light Swallow', description: 'Okra soup with fish and a light swallow', tags: ['Healthy'], kcal: 420, localImage: 'okra-soup.jpg' },
+    { name: 'Boiled Plantain & Lean Stew', description: 'Balanced, wholesome boiled plantain with lean stew', tags: ['Healthy'], kcal: 400, localImage: 'boiled-plantain-stew.jpg' },
+    { name: 'Vegetable Soup & Lean Protein', description: 'Fresh vegetable soup with a lean protein', tags: ['Healthy'], kcal: 410, localImage: 'vegetable-soup.jpg' },
+    { name: 'Fruit Bowl & Honey', description: 'Natural, energizing fruit bowl with nuts and honey', tags: ['Healthy', 'Light'], kcal: 260, localImage: 'fruit-bowl-honey.jpg' }
   ],
   spicy: [
-    { name: 'Suya', description: 'Smoky suya with onions and chili — a spicy classic', tags: ['Spicy'], kcal: 480, localImage: 'suya.jpg', searchQuery: 'suya onions chili', fallbackImageUrl: 'https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=500' },
-    { name: 'Pepper Soup', description: 'Hearty, warming pepper soup with meat', tags: ['Spicy', 'Heavy'], kcal: 440, localImage: 'pepper-soup.jpg', searchQuery: 'Nigerian pepper soup meat', fallbackImageUrl: 'https://images.unsplash.com/photo-1583608205776-bfd35f0d9f83?w=500' },
-    { name: 'Spicy Jollof Rice', description: 'Bold, flavorful jollof rice with extra pepper', tags: ['Spicy'], kcal: 520, localImage: 'spicy-jollof-rice.jpg', searchQuery: 'spicy jollof rice', fallbackImageUrl: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=500' },
-    { name: 'Peppered Goat Meat', description: 'Intensely flavored peppered goat meat', tags: ['Spicy', 'Heavy'], kcal: 500, localImage: 'peppered-goat-meat.jpg', searchQuery: 'peppered goat meat Nigerian', fallbackImageUrl: 'https://images.unsplash.com/photo-1544025162-d76694265947?w=500' },
-    { name: 'Scotch Bonnet Stew', description: 'Fiery hot stew with extra scotch bonnet pepper', tags: ['Spicy'], kcal: 460, localImage: 'scotch-bonnet-stew.jpg', searchQuery: 'scotch bonnet pepper stew', fallbackImageUrl: 'https://images.unsplash.com/photo-1606850780554-b55ea4dd0b70?w=500' }
+    { name: 'Suya', description: 'Smoky suya with onions and chili — a spicy classic', tags: ['Spicy'], kcal: 480, localImage: 'suya.jpg' },
+    { name: 'Pepper Soup', description: 'Hearty, warming pepper soup with meat', tags: ['Spicy', 'Heavy'], kcal: 440, localImage: 'pepper-soup.jpg' },
+    { name: 'Spicy Jollof Rice', description: 'Bold, flavorful jollof rice with extra pepper', tags: ['Spicy'], kcal: 520, localImage: 'spicy-jollof-rice.jpg' },
+    { name: 'Peppered Goat Meat', description: 'Intensely flavored peppered goat meat', tags: ['Spicy', 'Heavy'], kcal: 500, localImage: 'peppered-goat-meat.jpg' },
+    { name: 'Scotch Bonnet Stew', description: 'Fiery hot stew with extra scotch bonnet pepper', tags: ['Spicy'], kcal: 460, localImage: 'scotch-bonnet-stew.jpg' }
   ],
   affordable: [
-    { name: 'Beans & Plantain', description: 'Budget-friendly, filling beans with fried plantain', tags: ['Affordable', 'Filling'], kcal: 450, localImage: 'beans-plantain.jpg', searchQuery: 'beans plantain Nigerian', fallbackImageUrl: 'https://images.unsplash.com/photo-1626082927389-6cd097cee6a6?w=500' },
-    { name: 'Fried Rice & Chicken', description: 'Affordable, satisfying fried rice with chicken', tags: ['Affordable'], kcal: 560, localImage: 'fried-rice-chicken.jpg', searchQuery: 'fried rice chicken plate', fallbackImageUrl: 'https://images.unsplash.com/photo-1551632786-de41ec16a01d?w=500' },
-    { name: 'Akara & Bread', description: 'Cheap and cheerful morning meal', tags: ['Affordable', 'Light'], kcal: 340, localImage: 'akara-bread.jpg', searchQuery: 'akara bread Nigerian breakfast', fallbackImageUrl: 'https://images.unsplash.com/photo-1585238341710-4913d3ca7cc0?w=500' },
-    { name: 'Yam Porridge', description: 'Economical, tasty yam porridge with savory sauce', tags: ['Affordable'], kcal: 500, localImage: 'yam-porridge.jpg', searchQuery: 'Nigerian yam porridge', fallbackImageUrl: 'https://images.unsplash.com/photo-1604908176997-125f25cc6f3d?w=500' },
-    { name: 'Rice & Stew', description: 'Classic, affordable rice and stew combo', tags: ['Affordable'], kcal: 530, localImage: 'rice-stew.jpg', searchQuery: 'rice and stew Nigerian', fallbackImageUrl: 'https://images.unsplash.com/photo-1567620905732-2d1ec7ab7445?w=500' }
+    { name: 'Beans & Plantain', description: 'Budget-friendly, filling beans with fried plantain', tags: ['Affordable', 'Filling'], kcal: 450, localImage: 'beans-plantain.jpg' },
+    { name: 'Fried Rice & Chicken', description: 'Affordable, satisfying fried rice with chicken', tags: ['Affordable'], kcal: 560, localImage: 'fried-rice-chicken.jpg' },
+    { name: 'Akara & Bread', description: 'Cheap and cheerful morning meal', tags: ['Affordable', 'Light'], kcal: 340, localImage: 'akara-bread.jpg' },
+    { name: 'Yam Porridge', description: 'Economical, tasty yam porridge with savory sauce', tags: ['Affordable'], kcal: 500, localImage: 'yam-porridge.jpg' },
+    { name: 'Rice & Stew', description: 'Classic, affordable rice and stew combo', tags: ['Affordable'], kcal: 530, localImage: 'rice-stew.jpg' }
   ]
 };
 
@@ -186,13 +193,15 @@ function getOrderMenuItemByIndex(idx) {
   return ORDER_MENU_ITEMS[idx];
 }
 
-// localImage: drop a matching file into public/images/ to override the
-// fallbackImageUrl stock photo for that combo — see resolveImageUrl().
+// localImage: drop a matching file into public/images/ — this is now the
+// ONLY image source (see resolveImageUrl()). No external URL fallback: if
+// the file isn't there, the combo is sent as text instead of a mismatched
+// stock photo.
 const ORDER_COMBOS = [
-  { title: 'Plain Rice', description: 'Steamed rice with tomato stew and salad', category: 'Rice', price: 1500, localImage: 'combo-plain-rice.jpg', fallbackImageUrl: 'https://images.unsplash.com/photo-1567620905732-2d1ec7ab7445?w=500' },
-  { title: 'Rice & Beans', description: 'Rice served with beans and plantain', category: 'Rice & Beans', price: 1700, localImage: 'combo-rice-beans.jpg', fallbackImageUrl: 'https://images.unsplash.com/photo-1626082927389-6cd097cee6a6?w=500' },
-  { title: 'Rice & Meat', description: 'Rice with chicken stew and a side of greens', category: 'Rice & Meat', price: 2200, localImage: 'combo-rice-meat.jpg', fallbackImageUrl: 'https://images.unsplash.com/photo-1551632786-de41ec16a01d?w=500' },
-  { title: 'Rice, Meat & Fanta', description: 'Rice, meat stew, and Fanta to wash it down', category: 'Rice Combos', price: 2800, localImage: 'combo-rice-meat-fanta.jpg', fallbackImageUrl: 'https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=500' }
+  { title: 'Plain Rice', description: 'Steamed rice with tomato stew and salad', category: 'Rice', price: 1500, localImage: 'combo-plain-rice.jpg' },
+  { title: 'Rice & Beans', description: 'Rice served with beans and plantain', category: 'Rice & Beans', price: 1700, localImage: 'combo-rice-beans.jpg' },
+  { title: 'Rice & Meat', description: 'Rice with chicken stew and a side of greens', category: 'Rice & Meat', price: 2200, localImage: 'combo-rice-meat.jpg' },
+  { title: 'Rice, Meat & Fanta', description: 'Rice, meat stew, and Fanta to wash it down', category: 'Rice Combos', price: 2800, localImage: 'combo-rice-meat-fanta.jpg' }
 ];
 
 // Loose mapping from our mood/category buckets (light, heavy, healthy, spicy,
@@ -1367,7 +1376,9 @@ function localImageExists(filename) {
   if (localImageExistsCache.has(filename)) return localImageExistsCache.get(filename);
   const exists = fs.existsSync(path.join(__dirname, 'public/images', filename));
   localImageExistsCache.set(filename, exists);
-  if (DEBUG && !exists) console.warn(`Local image missing: public/images/${filename}`);
+  // Always warn (not just under DEBUG) — a missing file is the #1 reason an
+  // expected image silently doesn't show up.
+  if (!exists) console.warn(`Local image missing: public/images/${filename} — sending text instead for this item.`);
   return exists;
 }
 
@@ -1375,15 +1386,15 @@ function getLocalImageUrl(filename) {
   return `${PUBLIC_URL}/images/${encodeURIComponent(filename)}`;
 }
 
-// Curated images only — a local file you drop into public/images/ (guaranteed
-// to match), falling back to a hand-picked stock photo if that file isn't
-// there yet. No live image search: that was returning wrong/unrelated photos
-// often enough to be worse than no image at all.
+// Local files only — no external URL fallback. If the file listed in
+// localImage isn't in public/images/, we return null and the caller (see
+// buildComboImageReplies) sends plain text for that item instead of an
+// unrelated stock photo.
 async function resolveImageUrl(item) {
   if (item.localImage && localImageExists(item.localImage)) {
     return getLocalImageUrl(item.localImage);
   }
-  return item.fallbackImageUrl || null;
+  return null;
 }
 
 // Geoapify Places API (free tier: 3,000 requests/day, no billing account
