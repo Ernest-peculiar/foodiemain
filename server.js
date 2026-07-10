@@ -977,6 +977,24 @@ async function askGrok(userMessage, sessionData = {}, { creative = false } = {})
 
 const STATIC_GREETING = `Hi! I'm *Foodie* — your personal Nigerian food guide. Tell me you're hungry and I'll handle the rest!`;
 
+// Buttons shown to new users so they can register or order with a tap.
+function getNewUserButtonsReply(bodyText = 'Get started with Foodie:') {
+  return {
+    type: 'interactive',
+    interactive: {
+      type: 'button',
+      body: { text: bodyText },
+      action: {
+        buttons: [
+          { type: 'reply', reply: { id: 'register_vendor', title: 'Register vendor' } },
+          { type: 'reply', reply: { id: 'register_driver', title: 'Register driver' } },
+          { type: 'reply', reply: { id: 'order_now', title: 'Order now' } }
+        ]
+      }
+    }
+  };
+}
+
 // Two buttons covering the two things people actually do right after a
 // greeting, so they can tap instead of typing free text.
 function getGreetingButtonsReply(bodyText = 'Or tap an option below 👇') {
@@ -1038,10 +1056,10 @@ async function handleGreeting(seedText = 'hello', name = 'friend', profile = {},
     };
   }
 
-  // First-time user — give the full introduction, and remember we've now
+  // First-time user — give the exact Foodie introduction, and remember we've now
   // met them so future greetings skip straight to "welcome back".
   const grokReply = await askGrok(seedText, {}, { creative: true });
-  const greetingText = `Hi ${name}, I'm *Foodie* — your personal Nigerian food guide. Tell me what you'd like to eat and I'll handle the rest! To register as a vendor, reply *register vendor*. To register as a driver, reply *register driver*.`;
+  const greetingText = `Hi ${name}, I'm *Foodie* — your personal Nigerian food guide. Tell me what you'd like to eat and I'll handle the rest!`;
 
   if (phone) await saveProfile(phone, { firstSeenAt: new Date().toISOString() });
 
@@ -1049,7 +1067,7 @@ async function handleGreeting(seedText = 'hello', name = 'friend', profile = {},
     replies: [
       { type: 'text', body: greetingText },
       { type: 'text', body: grokReply || `I'm here to help you order food, find nearby restaurants, or get meal ideas.` },
-      getGreetingButtonsReply()
+      getNewUserButtonsReply()
     ],
     nextStage: null
   };
