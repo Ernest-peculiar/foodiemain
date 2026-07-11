@@ -866,14 +866,29 @@ async function handleDriverVehicleType(text, name, session, shortName, phone) {
     };
   }
 
-  await dispatch.upsertDriver(supabase, {
-    phone: normalizePhone(phone),
-    name: session.driverName,
-    photoUrl: session.driverPhotoUrl || null,
-    vehicleType,
-    isActive: true,
-    isOnline: false
-  });
+  // Without this try/catch, a DB error here (e.g. missing photo_url /
+  // vehicle_type columns) throws all the way up through buildReply ->
+  // handleIncomingMessage -> the /webhook handler, which has no catch of
+  // its own — the request just dies and the driver never gets a reply at
+  // all. Catching it here turns that into a visible error message plus a
+  // log line, instead of the bot silently going quiet after "Motorcycle".
+  try {
+    await dispatch.upsertDriver(supabase, {
+      phone: normalizePhone(phone),
+      name: session.driverName,
+      photoUrl: session.driverPhotoUrl || null,
+      vehicleType,
+      isActive: true,
+      isOnline: false
+    });
+  } catch (error) {
+    console.error('Failed to finalize driver registration:', error.message || error);
+    return {
+      replies: { type: 'text', body: `Something went wrong saving your registration — please try tapping your vehicle type again, or contact support if this keeps happening.` },
+      nextStage: STAGES.DRIVER_AWAIT_VEHICLE_TYPE,
+      sessionData: session
+    };
+  }
 
   return {
     replies: {
@@ -1094,7 +1109,16 @@ app.post('/webhook', async (req, res) => {
         const messages = value.messages || [];
 
         for (const message of messages) {
-          await handleIncomingMessage(message, value);
+          try {
+            await handleIncomingMessage(message, value);
+          } catch (error) {
+            // Safety net: never let one bad message (a DB error, a bug in a
+            // stage handler, anything) crash the whole webhook request. Log
+            // it loudly so it's actually visible, but always keep going —
+            // otherwise the user is left staring at their phone with no
+            // reply and no indication anything went wrong.
+            console.error('handleIncomingMessage failed:', error);
+          }
         }
       }
     }
