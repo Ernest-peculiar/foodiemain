@@ -2249,7 +2249,10 @@ async function buildReply(text, name = 'friend', session = {}, phone) {
   }
   if (normalized === 'try_different_meals') return handleHungry();
   if (normalized === 'get_meal_plan') return handleMealPlanPlaceholder();
-  if (normalized === 'order_now') return handleOrderNow();
+  // When a new user taps "Order now" from the initial card, show the
+  // hungry prompt (order now / recommend meals) rather than immediately
+  // asking for location — this matches the UX in the screenshot.
+  if (normalized === 'order_now') return handleHungry();
   if (normalized === 'recommend_meals') return handleRecommendMeals();
   if (normalized === 'reorder_last') return handleReorderLast(await getProfile(phone));
   // From the "Welcome back" reorder card: skip straight into the normal
