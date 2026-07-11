@@ -449,6 +449,20 @@ async function finalizeRegistration(text, phone, session) {
       };
     }
 
+    // Validate that the supplied menu includes prices for each item.
+    const parsed = parseVendorMenu(menuText || '');
+    const allHavePrices = parsed.length > 0 && parsed.every((it) => it.price !== null);
+    if (!allHavePrices) {
+      return {
+        replies: {
+          type: 'text',
+          body: 'Please include prices for each menu item (e.g. "Rice & Beans - 1500"). Send your menu again with prices per line or comma-separated.'
+        },
+        nextStage: STAGES.VENDOR_AWAIT_MENU,
+        sessionData: { ...session, registrationRole: 'vendor', vendorName }
+      };
+    }
+
     const vendor = await dispatch.upsertVendor(supabase, {
       phone: normalizePhone(phone),
       name: vendorName,
@@ -617,17 +631,23 @@ async function handleDispatchPayload(payload, phone, session) {
           .eq('id', orderRow.vendor_id)
           .maybeSingle();
 
-        if (!vendorError && vendorRecord?.phone) {
-          const caption = `✅ ${driver.name} has accepted the delivery and is on the way to pick up the order.`;
+        const caption = `✅ ${driver.name} has accepted the delivery and is on the way to pick up the order.`;
+        const vendorTarget = (vendorRecord && vendorRecord.phone) ? vendorRecord.phone : ORDER_NOTIFY_NUMBER;
+
+        if (vendorTarget) {
+          // Build caption with additional driver info
+          const infoCaption = `${caption}\n\nRider: ${driver.name || 'Unknown'}${driver.vehicle_type ? `\nVehicle: ${driver.vehicle_type}` : ''}${driver.phone ? `\nPhone: ${driver.phone}` : ''}`;
           if (driver.photo_url) {
-            await sendWhatsAppMessage(vendorRecord.phone, {
+            await sendWhatsAppMessage(vendorTarget, {
               type: 'image',
               imageUrl: driver.photo_url,
-              caption
+              caption: infoCaption
             });
           } else {
-            await sendWhatsAppMessage(vendorRecord.phone, { type: 'text', body: caption });
+            await sendWhatsAppMessage(vendorTarget, { type: 'text', body: infoCaption });
           }
+        } else {
+          console.warn('No vendor phone or ORDER_NOTIFY_NUMBER configured; cannot notify vendor of driver assignment.');
         }
       }
     }
@@ -2053,12 +2073,23 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
   const address = text.trim();
   const email = parseEmail(text) || `${name.replace(/\s+/g, '.').toLowerCase()}@example.com`;
   const unitPrice = (combo && (combo.price || combo.price === 0)) ? Number(combo.price) : 0;
-  const payment = await createPaystackTransaction(email, unitPrice * qty);
+  let payment = null;
   const totalAmount = unitPrice * qty;
 
-  const paymentMessage = payment
-    ? `Please complete payment here: ${payment.authorization_url}`
-    : `I couldn't create the payment link right now. Please try again later or contact support.`;
+  let paymentMessage = '';
+  if (unitPrice <= 0) {
+    paymentMessage = `This restaurant has not set prices for that item. Please contact the restaurant to confirm the price before paying.`;
+
+    // Notify vendor/admin that a customer attempted checkout but no price is set
+    const vendorTarget = (vendor && vendor.phone) ? vendor.phone : ORDER_NOTIFY_NUMBER;
+    const notifyBody = `⚠️ Customer ${name} attempted to order ${qty} x ${combo.title || combo.name} but no price is set for this item. Please update your menu to include prices so customers can pay.`;
+    if (vendorTarget) await sendWhatsAppMessage(vendorTarget, { type: 'text', body: notifyBody });
+  } else {
+    payment = await createPaystackTransaction(email, unitPrice * qty);
+    paymentMessage = payment
+      ? `Please complete payment here: ${payment.authorization_url}`
+      : `I couldn't create the payment link right now. Please try again later or contact support.`;
+  }
 
   const orderRecord = await dispatch.createOrderRecord(supabase, {
     customerName: name,
