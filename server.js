@@ -602,8 +602,34 @@ async function handleDispatchPayload(payload, phone, session) {
     }
 
     const { data: orderRow, error } = await supabase.from('orders').select('*').eq('id', orderId).maybeSingle();
-    if (!error && orderRow?.customer_phone) {
-      await sendWhatsAppMessage(orderRow.customer_phone, { type: 'text', body: '🚚 A driver has accepted your order and is on the way.' });
+    if (!error && orderRow) {
+      if (orderRow.customer_phone) {
+        await sendWhatsAppMessage(orderRow.customer_phone, {
+          type: 'text',
+          body: `🚚 ${driver.name} has accepted your order and is on the way.`
+        });
+      }
+
+      if (orderRow.vendor_id) {
+        const { data: vendorRecord, error: vendorError } = await supabase
+          .from('vendors')
+          .select('*')
+          .eq('id', orderRow.vendor_id)
+          .maybeSingle();
+
+        if (!vendorError && vendorRecord?.phone) {
+          const caption = `✅ ${driver.name} has accepted the delivery and is on the way to pick up the order.`;
+          if (driver.photo_url) {
+            await sendWhatsAppMessage(vendorRecord.phone, {
+              type: 'image',
+              imageUrl: driver.photo_url,
+              caption
+            });
+          } else {
+            await sendWhatsAppMessage(vendorRecord.phone, { type: 'text', body: caption });
+          }
+        }
+      }
     }
 
     return {
