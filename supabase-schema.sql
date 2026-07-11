@@ -15,6 +15,8 @@ create table if not exists drivers (
   id uuid primary key default gen_random_uuid(),
   name text not null,
   phone text unique,
+  photo_url text,
+  vehicle_type text,
   is_active boolean not null default true,
   is_online boolean not null default false,
   current_order uuid,
