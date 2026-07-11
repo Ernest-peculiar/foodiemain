@@ -268,6 +268,49 @@ async function getDriverRecordByPhone(phone) {
   return data;
 }
 
+// Looks up a registered vendor by name. Tries an exact (case-insensitive)
+// match first; if that finds nothing, falls back to a partial/contains
+// match so small differences in spacing, punctuation, or a missing word
+// (e.g. customer types "Silvers Bites" but she registered as "Silver's
+// Bites", or "Silver's Bites Restaurant") don't silently fail to reach her.
+// If the partial match is ambiguous (more than one vendor matches), we
+// deliberately do NOT guess — better to fall back to the generic flow than
+// to notify the wrong vendor.
+async function findVendorByName(candidateName) {
+  if (!supabase || !candidateName) return null;
+  const trimmed = candidateName.trim();
+  if (!trimmed) return null;
+
+  try {
+    const { data: exactMatch, error: exactError } = await supabase
+      .from('vendors')
+      .select('*')
+      .ilike('name', trimmed)
+      .maybeSingle();
+    if (!exactError && exactMatch) return exactMatch;
+
+    const { data: partialMatches, error: partialError } = await supabase
+      .from('vendors')
+      .select('*')
+      .ilike('name', `%${trimmed}%`)
+      .limit(5);
+
+    if (partialError) {
+      console.error('Vendor partial lookup failed:', partialError.message);
+      return null;
+    }
+    if (partialMatches && partialMatches.length === 1) {
+      return partialMatches[0];
+    }
+    if (partialMatches && partialMatches.length > 1) {
+      console.warn(`Vendor name "${trimmed}" matched multiple registered vendors (${partialMatches.map(v => v.name).join(', ')}) — skipping auto-select to avoid notifying the wrong one.`);
+    }
+  } catch (e) {
+    console.error('Vendor lookup failed:', e?.message || e);
+  }
+  return null;
+}
+
 async function resolveSenderRole(phone) {
   if (!phone) return 'customer';
   const vendor = await getVendorRecordByPhone(phone);
@@ -1390,11 +1433,19 @@ function getRestaurantListReply(vendors, bodyText = 'Nearby restaurants') {
 
 // Step 2: restaurant picked — either tapped from the list, or typed by hand
 // (e.g. the user names a place we didn't list, or didn't list one at all).
-// We don't have real per-restaurant menus (Places doesn't expose one), so
-// either way we offer our curated dish list against whichever vendor we end
-// up with. We show the menu LIST straight away — no image dump — and only
-// show the image of the specific combo once the user actually picks one
-// (see handleOrderSelectCombo).
+//
+// FIX: this used to build the vendor object straight from the Geoapify/OSM
+// result (or from raw typed text), which has nothing to do with your
+// Supabase `vendors` table — so an onboarded vendor's real phone number and
+// real menu were never used here, only the generic ORDER_COMBOS and
+// whatever (usually empty) phone Geoapify happened to return. That's why
+// vendors weren't receiving orders and their real menu wasn't showing up.
+//
+// Now we always check the `vendors` table for a name match first. If a
+// registered vendor is found we use THEIR phone (so notifications actually
+// reach them) and THEIR real menu (parsed from what they texted in at
+// registration). Only if no match exists do we fall back to the
+// Geoapify/typed vendor + the generic combo menu.
 async function handleOrderSelectRestaurant(text, name, session) {
   const trimmed = (text || '').trim();
   const idx = parseInt(trimmed.replace('vendor_', ''), 10);
@@ -1402,10 +1453,9 @@ async function handleOrderSelectRestaurant(text, name, session) {
 
   // Not a list tap, but they typed something meaningful — treat it as their
   // own restaurant choice rather than forcing them back to the tap-only list.
-  const vendor = vendorFromList
-    || (trimmed.length >= 2 ? { name: titleCase(trimmed), vicinity: 'Restaurant specified by customer' } : null);
+  const candidateName = vendorFromList?.name || (trimmed.length >= 2 ? titleCase(trimmed) : null);
 
-  if (!vendor) {
+  if (!candidateName) {
     return {
       replies: {
         type: 'text',
@@ -1415,6 +1465,34 @@ async function handleOrderSelectRestaurant(text, name, session) {
       sessionData: { nearbyVendors: session.nearbyVendors, userLat: session.userLat, userLng: session.userLng }
     };
   }
+
+  // Always check for a matching registered vendor first, regardless of
+  // whether the name came from the tapped list or free text.
+  const vendorRecord = await findVendorByName(candidateName);
+
+  if (vendorRecord && vendorRecord.menu) {
+    const menuItems = parseVendorMenu(vendorRecord.menu);
+    if (menuItems.length > 0) {
+      const vendor = {
+        name: vendorRecord.name,
+        phone: vendorRecord.phone, // the real registered number — this is what was missing
+        vicinity: vendorRecord.vicinity || vendorFromList?.vicinity || 'Registered restaurant'
+      };
+
+      return {
+        replies: [
+          { type: 'text', body: `Great pick! Here's the menu for *${vendor.name}* 👇` },
+          getVendorMenuListReply(menuItems, `Menu for ${vendor.name}`)
+        ],
+        nextStage: STAGES.ORDER_SELECT_COMBO,
+        sessionData: { selectedVendor: vendor, menuItems, userLat: session.userLat, userLng: session.userLng }
+      };
+    }
+  }
+
+  // No registered vendor found — fall back to the old behavior (generic
+  // combo menu, whatever contact info we have from Geoapify or none at all).
+  const vendor = vendorFromList || { name: candidateName, vicinity: 'Restaurant specified by customer' };
 
   return {
     replies: [
@@ -1545,7 +1623,7 @@ async function handleOrderSelectCombo(text, name, session) {
     return {
       replies: reply,
       nextStage: STAGES.ORDER_SELECT_COMBO,
-      sessionData: { selectedVendor: session.selectedVendor, selectedComboIdx: itemIdx, userLat: session.userLat, userLng: session.userLng }
+      sessionData: { selectedVendor: session.selectedVendor, selectedComboIdx: itemIdx, userLat: session.userLat, userLng: session.userLng, menuItems: session.menuItems }
     };
   }
   return {
@@ -1684,7 +1762,8 @@ function handleOrderEnterQty(text, name, session, shortName) {
       selectedComboIdx: session.selectedComboIdx,
       qty,
       userLat: session.userLat,
-      userLng: session.userLng
+      userLng: session.userLng,
+      menuItems: session.menuItems
     }
   };
 }
@@ -1732,7 +1811,8 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
         selectedComboIdx: session.selectedComboIdx,
         qty,
         userLat: session.userLat,
-        userLng: session.userLng
+        userLng: session.userLng,
+        menuItems: session.menuItems
       }
     };
   }
@@ -1783,9 +1863,9 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
       vendorName: vendor.name,
       vendorVicinity: vendor.vicinity,
       comboIdx: session.selectedComboIdx,
-      comboTitle: combo.title,
+      comboTitle: combo.title || combo.name,
       qty,
-      total: combo.price * qty,
+      total: (combo.price || 0) * qty,
       address,
       email,
       at: new Date().toISOString()
@@ -1796,7 +1876,7 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
     replies: [
       {
         type: 'text',
-        body: `✅ Almost done, ${shortName}!\n${qty} x *${combo.title}* from *${vendor.name}*\nDeliver to: ${address}\nTotal: ₦${totalAmount}\n${paymentMessage}`
+        body: `✅ Almost done, ${shortName}!\n${qty} x *${combo.title || combo.name}* from *${vendor.name}*\nDeliver to: ${address}\nTotal: ₦${totalAmount}\n${paymentMessage}`
       },
       getPostVendorButtonsReply()
     ],
@@ -1937,17 +2017,7 @@ async function buildReply(text, name = 'friend', session = {}, phone) {
         if (namedVendor) {
           const lookupName = titleCase(namedVendor);
           // Try to find a registered vendor with this name and show their menu
-          let vendorRecord = null;
-          try {
-            const { data, error } = await supabase
-              .from('vendors')
-              .select('*')
-              .ilike('name', lookupName)
-              .maybeSingle();
-            if (!error && data) vendorRecord = data;
-          } catch (e) {
-            console.error('Vendor lookup failed:', e?.message || e);
-          }
+          const vendorRecord = await findVendorByName(lookupName);
 
           if (vendorRecord && vendorRecord.menu) {
             const menuItems = parseVendorMenu(vendorRecord.menu);
