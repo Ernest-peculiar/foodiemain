@@ -70,6 +70,15 @@ const STAGES = {
   // Paystack payment link, so a rider actually has somewhere to deliver to.
   ORDER_AWAIT_ADDRESS: 'orderAwaitAddress',
   VENDOR_AWAIT_MENU: 'vendorAwaitMenu',
+  // Rider (driver) onboarding: name -> photo (must be taken live in WhatsApp,
+  // not picked from gallery) -> vehicle type. Kept as three distinct stages
+  // so a stray "hi" mid-registration can resume at the right step.
+  DRIVER_REG_AWAIT_PHOTO: 'driverRegAwaitPhoto',
+  DRIVER_AWAIT_VEHICLE_TYPE: 'driverAwaitVehicleType',
+  // Delivery-proof-of-drop-off photo, requested at the END of a completed
+  // delivery. Deliberately a different stage name from the registration
+  // photo above — they must never share a name or a stray registration photo
+  // could get attached to an in-flight delivery, or vice versa.
   DRIVER_AWAIT_PHOTO: 'driverAwaitPhoto'
 };
 
@@ -85,7 +94,9 @@ const STAGE_LABELS = {
   [STAGES.ORDER_SELECT_RESTAURANT]: 'picking a restaurant',
   [STAGES.ORDER_SELECT_COMBO]: 'picking a meal combo',
   [STAGES.ORDER_ENTER_QTY]: 'entering a quantity',
-  [STAGES.ORDER_AWAIT_ADDRESS]: 'entering your delivery address'
+  [STAGES.ORDER_AWAIT_ADDRESS]: 'entering your delivery address',
+  [STAGES.DRIVER_REG_AWAIT_PHOTO]: 'sending your rider photo',
+  [STAGES.DRIVER_AWAIT_VEHICLE_TYPE]: 'picking your vehicle type'
 };
 
 // Single source of truth for mood text -> category, replacing the old duplicated
@@ -400,6 +411,11 @@ async function handleRegistrationFlow(text, phone, session) {
   };
 }
 
+// Handles the free-text steps of registration. For vendors that's just
+// name -> menu (unchanged). For drivers, ONLY the name is collected here —
+// the name step now hands off to a photo step and then a vehicle-type step
+// (see handleDriverRegistrationPhoto / handleDriverVehicleType below) before
+// a driver row is actually created.
 async function finalizeRegistration(text, phone, session) {
   const role = session.registrationRole;
   const name = (text || '').trim();
@@ -450,21 +466,20 @@ async function finalizeRegistration(text, phone, session) {
     };
   }
 
-  const driver = await dispatch.upsertDriver(supabase, {
-    phone: normalizePhone(phone),
-    name,
-    isActive: true,
-    isOnline: false
-  });
+  // Driver: name step only. We do NOT upsert a driver record yet — that only
+  // happens once we also have a photo and a vehicle type.
+  if (session.stage === 'driverAwaitName') {
+    return {
+      replies: {
+        type: 'text',
+        body: `Thanks, ${name}! 📸 Now *take a photo of yourself right now using WhatsApp's camera* — tap the camera icon in this chat and snap it live. Please don't send a photo from your gallery; this is how riders get identified.`
+      },
+      nextStage: STAGES.DRIVER_REG_AWAIT_PHOTO,
+      sessionData: { ...session, registrationRole: 'driver', driverName: name }
+    };
+  }
 
-  return {
-    replies: {
-      type: 'text',
-      body: `✅ Registered ${name} as a driver. Reply online/offline to control availability.`
-    },
-    nextStage: null,
-    sessionData: { ...session, registrationRole: null }
-  };
+  return null;
 }
 
 async function handleDispatchPayload(payload, phone, session) {
@@ -492,20 +507,31 @@ async function handleDispatchPayload(payload, phone, session) {
     }
 
     const customerPhone = updatedOrder.customer_phone;
-    const customerMessage = updatedOrder.customer_phone
+    const customerMessage = customerPhone
       ? { type: 'text', body: `✅ ${updatedOrder.restaurant_name || 'Your restaurant'} accepted your order. Estimated prep time: ${prepMinutes} minutes.` }
       : null;
 
-    if (customerPhone) {
+    if (customerPhone && customerMessage) {
       await sendWhatsAppMessage(customerPhone, customerMessage);
     }
+
+    // Pickup details for the driver — pulled from the vendor's own record
+    // (the same one used to authorize this accept action) rather than from
+    // the order row, so we don't need a separate restaurant-address column
+    // on `orders` just to notify a rider where to go.
+    const pickupName = updatedOrder.restaurant_name || vendor.name || 'the restaurant';
+    const pickupAddress = vendor.vicinity || vendor.address || null;
+    const pickupPhone = vendor.phone ? normalizePhone(vendor.phone) : null;
 
     const availableDrivers = await dispatch.findAvailableDrivers(supabase);
     if (availableDrivers.length > 0) {
       for (const driver of availableDrivers) {
         const driverMessage = {
           type: 'text',
-          body: `🚚 New delivery request. Order ${updatedOrder.id}`
+          body: `🚚 New delivery request (Order ${updatedOrder.id})\n`
+              + `Pick up from: *${pickupName}*`
+              + (pickupAddress ? `\n📍 ${pickupAddress}` : '\n📍 Pickup address not on file — confirm with the vendor')
+              + (pickupPhone ? `\n📞 ${pickupPhone}` : '')
         };
         await sendWhatsAppMessage(driver.phone, driverMessage);
         await sendWhatsAppMessage(driver.phone, getDriverAcceptButtonsReply(updatedOrder.id));
@@ -709,6 +735,153 @@ async function handleDeliveryPhotoMessage(message, phone, session) {
     replies: { type: 'text', body: 'Send a photo for proof of delivery, or reply with skip.' },
     nextStage: STAGES.DRIVER_AWAIT_PHOTO,
     sessionData: session
+  };
+}
+
+// --- Driver (rider) onboarding: photo + vehicle type ------------------------
+// Registration flow is: name (handled in finalizeRegistration above) ->
+// photo (this step) -> vehicle type (next step) -> driver row created.
+//
+// IMPORTANT — things this file cannot do on its own:
+// 1. WhatsApp's webhook payload for an image message does NOT indicate
+//    whether the photo was taken live with the in-chat camera or picked
+//    from the device gallery — that distinction isn't exposed by the API.
+//    So "must be taken on WhatsApp" is enforced by instruction only (the
+//    prompt text below), not verified technically.
+// 2. This calls dispatch.uploadDriverPhoto(...), which must exist in
+//    lib/order-dispatch.js (mirroring the existing uploadDeliveryPhoto).
+//    Example implementation, assuming a public `driver-photos` Storage
+//    bucket:
+//
+//      async function uploadDriverPhoto(supabase, phone, buffer, mimeType, filename) {
+//        const { data, error } = await supabase.storage
+//          .from('driver-photos')
+//          .upload(`${phone}/${filename}`, buffer, { contentType: mimeType, upsert: true });
+//        if (error) throw error;
+//        const { data: pub } = supabase.storage.from('driver-photos').getPublicUrl(data.path);
+//        return pub.publicUrl;
+//      }
+//
+// 3. dispatch.upsertDriver(...) needs to accept and persist `photoUrl` and
+//    `vehicleType`. Add `photo_url text` and `vehicle_type text` columns
+//    (nullable, for existing drivers) to the `drivers` table in
+//    supabase-schema.sql, and pass them through in upsertDriver's payload.
+async function handleDriverRegistrationPhoto(message, phone, session) {
+  if (message.type !== 'image' || !message.image?.id) {
+    return {
+      replies: {
+        type: 'text',
+        body: `📸 Please send a photo taken just now with WhatsApp's camera (tap the camera icon in this chat — not a photo from your gallery) so we can verify you.`
+      },
+      nextStage: STAGES.DRIVER_REG_AWAIT_PHOTO,
+      sessionData: session
+    };
+  }
+
+  try {
+    const mediaUrl = `https://graph.facebook.com/${WHATSAPP_API_VERSION}/${message.image.id}`;
+    const mediaResponse = await fetch(mediaUrl, {
+      headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` }
+    });
+    const buffer = Buffer.from(await mediaResponse.arrayBuffer());
+    const photoUrl = await dispatch.uploadDriverPhoto(
+      supabase,
+      normalizePhone(phone),
+      buffer,
+      message.image.mime_type || 'image/jpeg',
+      `driver-${normalizePhone(phone)}-${Date.now()}.jpg`
+    );
+
+    return {
+      replies: [
+        { type: 'text', body: `Got it! 🚴 Last step — what do you ride?` },
+        getVehicleTypeListReply()
+      ],
+      nextStage: STAGES.DRIVER_AWAIT_VEHICLE_TYPE,
+      sessionData: { ...session, driverPhotoUrl: photoUrl }
+    };
+  } catch (error) {
+    console.error('Failed to upload driver registration photo:', error);
+    return {
+      replies: { type: 'text', body: `I couldn't save that photo — please try sending it again.` },
+      nextStage: STAGES.DRIVER_REG_AWAIT_PHOTO,
+      sessionData: session
+    };
+  }
+}
+
+// Vehicle category picker. "Legedezbenz" is used verbatim as requested for
+// the fourth option — rename the label (and its VEHICLE_TYPE_LABELS entries
+// below) if it should read something else, e.g. "Car".
+function getVehicleTypeListReply(bodyText = 'What do you ride for deliveries?') {
+  return {
+    type: 'interactive',
+    interactive: {
+      type: 'list',
+      body: { text: bodyText },
+      action: {
+        button: 'Choose',
+        sections: [
+          {
+            rows: [
+              { id: 'vehicle_bike', title: 'Bike' },
+              { id: 'vehicle_motorcycle', title: 'Motorcycle' },
+              { id: 'vehicle_bicycle', title: 'Bicycle' },
+              { id: 'vehicle_legedezbenz', title: 'Legedezbenz' }
+            ]
+          }
+        ]
+      }
+    }
+  };
+}
+
+// Accepts either the tapped list id ("vehicle_bike") or free-typed text
+// ("bike") so a driver who types instead of tapping still gets through.
+const VEHICLE_TYPE_LABELS = {
+  vehicle_bike: 'Bike',
+  vehicle_motorcycle: 'Motorcycle',
+  vehicle_bicycle: 'Bicycle',
+  vehicle_legedezbenz: 'Legedezbenz',
+  bike: 'Bike',
+  motorcycle: 'Motorcycle',
+  bicycle: 'Bicycle',
+  legedezbenz: 'Legedezbenz'
+};
+
+// Final registration step: name + photo already captured on the session, now
+// a vehicle type — only at this point do we actually create the driver row.
+async function handleDriverVehicleType(text, name, session, shortName, phone) {
+  const trimmed = (text || '').trim().toLowerCase();
+  const vehicleType = VEHICLE_TYPE_LABELS[trimmed] || null;
+
+  if (!vehicleType) {
+    return {
+      replies: [
+        { type: 'text', body: `Please tap one of the options above 👆 to pick your vehicle type.` },
+        getVehicleTypeListReply()
+      ],
+      nextStage: STAGES.DRIVER_AWAIT_VEHICLE_TYPE,
+      sessionData: session
+    };
+  }
+
+  await dispatch.upsertDriver(supabase, {
+    phone: normalizePhone(phone),
+    name: session.driverName,
+    photoUrl: session.driverPhotoUrl || null,
+    vehicleType,
+    isActive: true,
+    isOnline: false
+  });
+
+  return {
+    replies: {
+      type: 'text',
+      body: `✅ Registered ${session.driverName} as a driver on a *${vehicleType}*. Reply online/offline to control availability.`
+    },
+    nextStage: null,
+    sessionData: { registrationRole: null, driverName: null, driverPhotoUrl: null }
   };
 }
 
@@ -964,6 +1137,12 @@ async function handleIncomingMessage(message, value) {
     result = registrationReply;
   } else if (session.stage === 'vendorAwaitName' || session.stage === STAGES.VENDOR_AWAIT_MENU || session.stage === 'driverAwaitName') {
     result = await finalizeRegistration(text, from, session);
+  } else if (session.stage === STAGES.DRIVER_REG_AWAIT_PHOTO) {
+    // Rider onboarding photo — needs the raw `message` object (to read
+    // message.image), so it's handled here rather than through the
+    // text-only buildReply() path, same pattern as the delivery-proof photo
+    // stage below.
+    result = await handleDriverRegistrationPhoto(message, from, session);
   } else if (session.stage === STAGES.DRIVER_AWAIT_PHOTO) {
     result = await handleDeliveryPhotoMessage(message, from, session);
   } else if (message.type === 'location' && message.location) {
@@ -1222,6 +1401,10 @@ async function getStageResumeReply(session) {
       return { type: 'text', body: `How many would you like? (e.g. "2")` };
     case STAGES.ORDER_AWAIT_ADDRESS:
       return { type: 'text', body: `Please type your *exact delivery address* — street name, house number or a nearby landmark, and the area.` };
+    case STAGES.DRIVER_REG_AWAIT_PHOTO:
+      return { type: 'text', body: `📸 Please take a photo of yourself right now using WhatsApp's camera (not from your gallery) to continue registration.` };
+    case STAGES.DRIVER_AWAIT_VEHICLE_TYPE:
+      return [{ type: 'text', body: `What do you ride for deliveries?` }, getVehicleTypeListReply()];
     default:
       return { type: 'text', body: `Let's continue!` };
   }
@@ -1959,7 +2142,8 @@ const STAGE_HANDLERS = {
   [STAGES.ORDER_SELECT_RESTAURANT]: handleOrderSelectRestaurant,
   [STAGES.ORDER_SELECT_COMBO]: handleOrderSelectCombo,
   [STAGES.ORDER_ENTER_QTY]: handleOrderEnterQty,
-  [STAGES.ORDER_AWAIT_ADDRESS]: handleOrderAwaitAddress
+  [STAGES.ORDER_AWAIT_ADDRESS]: handleOrderAwaitAddress,
+  [STAGES.DRIVER_AWAIT_VEHICLE_TYPE]: handleDriverVehicleType
 };
 
 async function buildReply(text, name = 'friend', session = {}, phone) {
