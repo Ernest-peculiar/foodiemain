@@ -477,6 +477,61 @@ async function finalizeRegistration(text, phone, session) {
 async function handleDispatchPayload(payload, phone, session) {
   const normalized = (payload || '').trim();
 
+  // --- Vendor: step 1 of accepting a new order ------------------------------
+  // Tapping "✅ Accept" on the initial order card does NOT finalize the order
+  // yet — it just brings up the prep-time picker (10/20/30 min), which is
+  // what actually calls dispatch.vendorAcceptOrder further down.
+  const acceptPromptMatch = normalized.match(/^vendor_accept_prompt_([0-9a-f-]+)$/i);
+  if (acceptPromptMatch) {
+    const [, orderId] = acceptPromptMatch;
+    const vendor = await getVendorRecordByPhone(phone);
+    if (!vendor) {
+      return {
+        replies: { type: 'text', body: 'Only a registered vendor can accept this order.' },
+        nextStage: null,
+        sessionData: session
+      };
+    }
+
+    return {
+      replies: getVendorPrepTimeButtonsReply(orderId),
+      nextStage: null,
+      sessionData: session
+    };
+  }
+
+  // --- Vendor: "Unavailable" on a new order ---------------------------------
+  // Distinct from a plain Decline: this rejects the order AND flips the
+  // vendor closed (isOpen: false), so the restaurant stops receiving further
+  // order notifications until they reply "open" again. Useful when a vendor
+  // is overwhelmed or done for the day and would otherwise have to remember
+  // to separately type "close".
+  const unavailableMatch = normalized.match(/^vendor_unavailable_([0-9a-f-]+)$/i);
+  if (unavailableMatch) {
+    const [, orderId] = unavailableMatch;
+    const vendor = await getVendorRecordByPhone(phone);
+    if (!vendor) {
+      return {
+        replies: { type: 'text', body: 'Only a registered vendor can update this order.' },
+        nextStage: null,
+        sessionData: session
+      };
+    }
+
+    const updatedOrder = await dispatch.vendorRejectOrder(supabase, orderId, vendor.id);
+    await dispatch.setVendorAvailability(supabase, normalizePhone(phone), false);
+
+    if (updatedOrder && updatedOrder.customer_phone) {
+      await sendWhatsAppMessage(updatedOrder.customer_phone, { type: 'text', body: '❌ The restaurant is unable to fulfill your order right now.' });
+    }
+
+    return {
+      replies: { type: 'text', body: 'Got it — order declined and your restaurant is now marked closed. Reply "open" whenever you are ready to take orders again.' },
+      nextStage: null,
+      sessionData: session
+    };
+  }
+
   const acceptMatch = normalized.match(/^vendor_accept_([0-9a-f-]+)_(\d+)$/i);
   if (acceptMatch) {
     const [, orderId, prepMinutes] = acceptMatch;
@@ -2107,7 +2162,8 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
 }
 
 // Sends a plain WhatsApp text to a staff/admin number so a human can relay the
-// order to the vendor. See the ORDER_NOTIFY_NUMBER note near the top of this
+// order to the vendor, plus the Accept/Decline/Unavailable buttons for the
+// vendor's own phone. See the ORDER_NOTIFY_NUMBER note near the top of this
 // file — WhatsApp won't let us free-form message the restaurant itself unless
 // it has an open session with this bot or we use an approved template.
 async function sendOrderNotification({ customerName, item, qty, vendor, address, paymentUrl, orderId }) {
@@ -2126,10 +2182,16 @@ async function sendOrderNotification({ customerName, item, qty, vendor, address,
     return;
   }
 
+  // Accept / Decline / Unavailable buttons — only meaningful on the actual
+  // order, so they go out alongside the notification whenever we have an
+  // orderId. "Accept" leads to the prep-time picker (vendor_accept_prompt_),
+  // "Decline" just rejects this one order (vendor_reject_), and
+  // "Unavailable" rejects this order AND closes the restaurant for further
+  // orders (vendor_unavailable_) — see handleDispatchPayload for all three.
   const replies = orderId
     ? [
         { type: 'text', body },
-        getVendorAcceptanceButtonsReply(orderId)
+        getVendorOrderActionButtonsReply(orderId)
       ]
     : [{ type: 'text', body }];
 
@@ -2357,7 +2419,34 @@ function getPostVendorButtonsReply(bodyText = 'What would you like to do next?')
   };
 }
 
-function getVendorAcceptanceButtonsReply(orderId, prepMinutes = 20) {
+// --- Vendor order-action buttons -------------------------------------------
+// Shown immediately when a new order comes in, BEFORE any prep time is
+// picked. Three options:
+//   ✅ Accept       -> vendor_accept_prompt_<orderId>  (shows prep-time picker)
+//   ❌ Decline      -> vendor_reject_<orderId>          (rejects just this order)
+//   🚫 Unavailable  -> vendor_unavailable_<orderId>     (rejects this order AND
+//                                                          closes the restaurant)
+// All three payloads are handled in handleDispatchPayload above.
+function getVendorOrderActionButtonsReply(orderId, bodyText = 'New order! Would you like to accept it?') {
+  return {
+    type: 'interactive',
+    interactive: {
+      type: 'button',
+      body: { text: bodyText },
+      action: {
+        buttons: [
+          { type: 'reply', reply: { id: `vendor_accept_prompt_${orderId}`, title: '✅ Accept' } },
+          { type: 'reply', reply: { id: `vendor_reject_${orderId}`, title: '❌ Decline' } },
+          { type: 'reply', reply: { id: `vendor_unavailable_${orderId}`, title: '🚫 Unavailable' } }
+        ]
+      }
+    }
+  };
+}
+
+// Prep-time picker — now shown only AFTER the vendor taps "✅ Accept" on the
+// card above, rather than as the very first thing a vendor sees.
+function getVendorPrepTimeButtonsReply(orderId) {
   return {
     type: 'interactive',
     interactive: {
