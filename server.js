@@ -21,8 +21,6 @@ const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const WHATSAPP_API_VERSION = process.env.WHATSAPP_API_VERSION || 'v22.0';
-const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
-const GEOAPIFY_API_KEY = process.env.GEOAPIFY_API_KEY;
 const GROK_API_KEY = process.env.GROK_API_KEY;
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
 const DEBUG = process.env.DEBUG === 'true';
@@ -56,14 +54,17 @@ const profiles = new Map();
 
 // Centralizing stage names avoids typo bugs like 'askLastmeal' vs 'askLastMeal'
 // scattered across the file.
+//
+// NOTE: there is no location stage anymore. Ordering now runs entirely off
+// onboarded (Supabase) vendors — the user either names a restaurant directly
+// ("rice from Munchy") or picks one from the full list of registered
+// restaurants. No map, no geocoding, no "share your location" step.
 const STAGES = {
   ASK_LAST_MEAL: 'askLastMeal',
   ASK_MOOD: 'askMood',
   ASK_HEALTH_GOALS: 'askHealthGoals',
-  AWAIT_LOCATION: 'awaitLocation',
   // Ordering flow: ask what they want -> pick a restaurant -> pick a menu item -> qty -> address -> payment.
   ORDER_ASK_WHAT: 'orderAskWhat',
-  ORDER_AWAIT_LOCATION: 'orderAwaitLocation',
   ORDER_SELECT_RESTAURANT: 'orderSelectRestaurant',
   ORDER_SELECT_COMBO: 'orderSelectCombo',
   ORDER_ENTER_QTY: 'orderEnterQty',
@@ -90,9 +91,7 @@ const STAGE_LABELS = {
   [STAGES.ASK_LAST_MEAL]: 'telling me what you last ate',
   [STAGES.ASK_MOOD]: 'picking a mood',
   [STAGES.ASK_HEALTH_GOALS]: 'sharing your health goals',
-  [STAGES.AWAIT_LOCATION]: 'sharing your location for vendor recommendations',
   [STAGES.ORDER_ASK_WHAT]: 'telling me what you want to order',
-  [STAGES.ORDER_AWAIT_LOCATION]: 'sharing your location to order',
   [STAGES.ORDER_SELECT_RESTAURANT]: 'picking a restaurant',
   [STAGES.ORDER_SELECT_COMBO]: 'picking a meal combo',
   [STAGES.ORDER_ENTER_QTY]: 'entering a quantity',
@@ -134,7 +133,7 @@ function mapMoodToCategory(userMoodText, fallback = 'light') {
 
 // localImage is unused for now (mood recommendations are text-only, see
 // buildMoodReply) but kept in case per-dish images get added back here too —
-// same local-file-only convention as ORDER_COMBOS, no external URLs.
+// no external URLs, local files only.
 const MOOD_CATALOG = {
   light: [
     { name: 'Moi Moi & Pap', description: 'Steamed bean pudding with fermented corn porridge', tags: ['Healthy', 'Light', 'Affordable'], kcal: 280, localImage: 'moi-moi-pap.jpg' },
@@ -187,55 +186,6 @@ function getSurpriseItems(count = 3) {
   return shuffled.slice(0, count);
 }
 
-// Google Places gives us real restaurants but no real per-restaurant menus, so
-// for ordering we offer this curated dish list against whichever restaurant the
-// user picks. Deduped by name and given a stable index (object literal key
-// order is preserved in JS) so 'item_<idx>' ids stay consistent between the
-// menu list message and the reply that comes back.
-const ORDER_MENU_ITEMS = (() => {
-  const seen = new Set();
-  const items = [];
-  for (const [category, categoryItems] of Object.entries(MOOD_CATALOG)) {
-    for (const item of categoryItems) {
-      if (seen.has(item.name)) continue;
-      seen.add(item.name);
-      items.push({ ...item, category });
-    }
-  }
-  return items;
-})();
-
-function getOrderMenuItemByIndex(idx) {
-  return ORDER_MENU_ITEMS[idx];
-}
-
-// localImage: drop a matching file into public/images/ — this is now the
-// ONLY image source (see resolveImageUrl()). No external URL fallback: if
-// the file isn't there, the combo is sent as text instead of a mismatched
-// stock photo.
-const ORDER_COMBOS = [
-  { title: 'Plain Rice', description: 'Steamed rice with tomato stew and salad', category: 'Rice', price: 1500, localImage: 'combo-plain-rice.jpg' },
-  { title: 'Rice & Beans', description: 'Rice served with beans and plantain', category: 'Rice & Beans', price: 1700, localImage: 'combo-rice-beans.jpg' },
-  { title: 'Rice & Meat', description: 'Rice with chicken stew and a side of greens', category: 'Rice & Meat', price: 2200, localImage: 'combo-rice-meat.jpg' },
-  { title: 'Rice, Meat & Fanta', description: 'Rice, meat stew, and Fanta to wash it down', category: 'Rice Combos', price: 2800, localImage: 'combo-rice-meat-fanta.jpg' }
-];
-
-// Loose mapping from our mood/category buckets (light, heavy, healthy, spicy,
-// affordable, surprise) to Geoapify's place-category taxonomy
-// (https://apidocs.geoapify.com/docs/places/#categories). Geoapify/OSM has no
-// true "spicy" or "light" category, so this is a best-effort bias toward
-// vendor *types* more likely to serve that kind of food (e.g. affordable ->
-// fast food, healthy -> cafe/vegetarian) — not a menu-level guarantee.
-const MOOD_PLACE_CATEGORIES = {
-  light: 'catering.cafe,catering.fast_food,catering.restaurant',
-  heavy: 'catering.restaurant,catering.fast_food',
-  healthy: 'catering.restaurant.vegetarian,catering.cafe,catering.restaurant',
-  spicy: 'catering.restaurant,catering.fast_food',
-  affordable: 'catering.fast_food,catering.cafe',
-  surprise: 'catering.restaurant,catering.fast_food,catering.cafe'
-};
-const DEFAULT_PLACE_CATEGORIES = 'catering.restaurant,catering.fast_food,catering.cafe';
-
 function parseEmail(text) {
   const match = (text || '').match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
   return match ? match[0] : null;
@@ -284,10 +234,10 @@ async function getDriverRecordByPhone(phone) {
 // Looks up a registered vendor by name. Tries an exact (case-insensitive)
 // match first; if that finds nothing, falls back to a partial/contains
 // match so small differences in spacing, punctuation, or a missing word
-// (e.g. customer types "Silvers Bites" but she registered as "Silver's
-// Bites", or "Silver's Bites Restaurant") don't silently fail to reach her.
+// (e.g. customer types "Munchies" but it's registered as "Munchy", or
+// "Munchy Restaurant") don't silently fail to reach them.
 // If the partial match is ambiguous (more than one vendor matches), we
-// deliberately do NOT guess — better to fall back to the generic flow than
+// deliberately do NOT guess — better to show the full restaurant list than
 // to notify the wrong vendor.
 async function findVendorByName(candidateName) {
   if (!supabase || !candidateName) return null;
@@ -324,9 +274,9 @@ async function findVendorByName(candidateName) {
   return null;
 }
 
-// All onboarded vendors that have a menu on file — used for the "Browse
-// Restaurants" listing, so customers pick from vendors you actually have
-// registered instead of only Geoapify's generic place search.
+// All onboarded vendors that have a menu on file — this is now the ONLY
+// source of restaurants in the ordering flow (no Geoapify, no Google Places,
+// no location/geocoding of any kind).
 async function getRegisteredVendors() {
   if (!supabase) return [];
 
@@ -974,48 +924,71 @@ async function handleDriverVehicleType(text, name, session, shortName, phone) {
   };
 }
 
-// Pulls an explicit restaurant name out of phrasing like "order rice from
-// Glamour" or "rice from Mama Put". This is a plain heuristic (looks for
-// "from <name>" at the end of the message) — it can't verify the place is
-// real, it just captures what the user typed so we can use it as-is.
-function detectVendorNameFromText(text) {
-  const match = (text || '').match(/\bfrom\s+([a-z0-9&'.\- ]{2,40})$/i);
-  if (!match) return null;
-  const cleaned = match[1].trim().replace(/[.?!]+$/, '');
-  return cleaned.length > 0 ? cleaned : null;
-}
-
-// Turns whatever casing the user typed ("glamour", "GLAMOUR") into a
-// consistent display form ("Glamour") for confirmations and staff notifications.
+// Turns whatever casing the user typed ("munchy", "MUNCHY") into a
+// consistent display form ("Munchy") for confirmations and staff notifications.
 function titleCase(str) {
   return (str || '').replace(/\w\S*/g, (w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
 }
 
-function detectOrderFoodRequest(text) {
-  if (!text) return null;
-  const normalized = text.toLowerCase();
-  const riceMatch = /\brice\b/.test(normalized);
-  const beansMatch = /\bbeans?\b|\bbeands?\b/.test(normalized);
-  const jollofMatch = /\bjollof\b/.test(normalized);
-  const wantMatch = /\b(order|eat|want|need|crave|give me|feed me|serve me|meal|meals?)\b/.test(normalized);
-  const negativeMatch = /\b(no|not|don't|dont|never|nothing)\b/.test(normalized);
+// Filler phrases people wrap around an order — stripped so the remaining
+// text is just the food item (or empty, if they only named a restaurant).
+// Checked longest-first so "i want to order" isn't cut short by "i want to".
+const ORDER_FILLER_PREFIXES = [
+  'i would like to order',
+  'i would like to',
+  "i'd like to order",
+  "i'd like to",
+  'i want to order',
+  'i want to',
+  'can i order',
+  'can i get',
+  'please order',
+  'let me order',
+  'let me get',
+  "i'll have",
+  'ill have',
+  'give me',
+  'order'
+];
 
-  const items = [];
-  if (riceMatch) items.push('rice');
-  if (beansMatch) items.push('beans');
-  if (jollofMatch) items.push('jollof');
+function stripOrderFiller(text) {
+  let result = (text || '').trim();
+  let changed = true;
+  // Loop because stripping one filler can reveal another (e.g. "i want to
+  // order" strips down to "order", which then also needs stripping).
+  while (changed) {
+    changed = false;
+    for (const prefix of ORDER_FILLER_PREFIXES) {
+      const re = new RegExp('^' + prefix.replace(/'/g, `['’]`) + '\\s*', 'i');
+      if (re.test(result)) {
+        result = result.replace(re, '').trim();
+        changed = true;
+      }
+    }
+  }
+  return result;
+}
 
-  if (items.length === 0) {
-    const match = normalized.match(/order\s+(.*)/i);
-    return match ? match[1].trim() : null;
+// Parses free text like "order rice from Munchy", "i want to order from
+// Munchy", "rice from Munchy", or "i want to order rice from Munchy" into
+// { foodItem, vendorName }. Either half can be null — a bare vendor mention
+// with no dish, or a dish with no restaurant named.
+function parseOrderRequest(text) {
+  const trimmed = (text || '').trim();
+  if (!trimmed) return { foodItem: null, vendorName: null };
+
+  const fromMatch = trimmed.match(/\bfrom\s+([a-z0-9&'.\- ]{2,40})$/i);
+  let vendorName = null;
+  let beforeFrom = trimmed;
+
+  if (fromMatch) {
+    vendorName = fromMatch[1].trim().replace(/[.?!]+$/, '') || null;
+    beforeFrom = trimmed.slice(0, fromMatch.index).trim();
   }
 
-  if (negativeMatch && wantMatch) return null;
-  if (wantMatch || items.length > 1 || normalized.length < 20) {
-    return items.join(' and ');
-  }
+  const foodItem = stripOrderFiller(beforeFrom);
 
-  return null;
+  return { foodItem: foodItem || null, vendorName };
 }
 
 // --- Persistence (Supabase) ------------------------------------------------
@@ -1244,21 +1217,17 @@ async function handleIncomingMessage(message, value) {
   } else if (session.stage === STAGES.DRIVER_AWAIT_PHOTO) {
     result = await handleDeliveryPhotoMessage(message, from, session);
   } else if (message.type === 'location' && message.location) {
-    const { latitude, longitude } = message.location;
-    await logMessage(from, 'inbound', 'location', `${latitude},${longitude}`, message.location);
-
-    if (session.stage === STAGES.ORDER_AWAIT_LOCATION || session.stage === STAGES.AWAIT_LOCATION) {
-      // Both the direct-order flow and the mood-recommendation flow now lead
-      // into the same restaurant -> menu -> qty -> address -> pay pipeline,
-      // so the user can actually order and pay instead of just being shown
-      // cards and a pin and left to sort it out themselves.
-      result = await handleOrderLocationReceived(latitude, longitude, session);
-    } else {
-      // No active flow (e.g. a location shared out of the blue) — just show
-      // informational vendor cards, nothing to transact against yet.
-      const replies = await buildVendorLocationReply(latitude, longitude, session.selectedMood);
-      result = { replies, nextStage: null };
-    }
+    // Location sharing is no longer part of the ordering flow — everything
+    // now runs off onboarded restaurants by name. Log it for the record but
+    // just nudge the user back toward naming a restaurant instead.
+    await logMessage(from, 'inbound', 'location', `${message.location.latitude},${message.location.longitude}`, message.location);
+    result = {
+      replies: {
+        type: 'text',
+        body: `No need to share your location — just tell me what you'd like and which restaurant it's from, e.g. "rice from Munchy".`
+      },
+      nextStage: null
+    };
   } else {
     if (DEBUG) console.log(`Message from ${from}: ${text}`);
     await logMessage(from, 'inbound', message.type || 'text', text, message);
@@ -1483,21 +1452,16 @@ async function getStageResumeReply(session) {
       return [{ type: 'text', body: `What are you in the mood for?` }, getMoodButtonsReply()];
     case STAGES.ASK_HEALTH_GOALS:
       return { type: 'text', body: `Any health goals I should know about?` };
-    case STAGES.AWAIT_LOCATION:
-      return getLocationRequestReply();
-    case STAGES.ORDER_AWAIT_LOCATION:
-      return getLocationRequestReply('Share your location so I can find restaurants near you 📍');
     case STAGES.ORDER_SELECT_RESTAURANT:
-      if (session.registeredVendors?.length) {
-        return [{ type: 'text', body: `Here are our restaurants again 👇` }, getRegisteredVendorListReply(session.registeredVendors)];
-      }
-      return session.nearbyVendors?.length
-        ? [{ type: 'text', body: `Here's what was nearby 👇 Tap a restaurant to choose.` }, getRestaurantListReply(session.nearbyVendors)]
+      return session.registeredVendors?.length
+        ? [{ type: 'text', body: `Here are our restaurants again 👇` }, getRegisteredVendorListReply(session.registeredVendors)]
         : { type: 'text', body: `Which restaurant would you like to order from?` };
     case STAGES.ORDER_SELECT_COMBO:
       // Resend just the menu list — no image dump. Images are shown once a
       // specific combo is picked (see handleOrderSelectCombo).
-      return [{ type: 'text', body: `Here's the menu again 👇` }, getComboListReply()];
+      return session.menuItems?.length
+        ? [{ type: 'text', body: `Here's the menu again 👇` }, getVendorMenuListReply(session.menuItems, `Menu for ${session.selectedVendor?.name || 'this restaurant'}`)]
+        : { type: 'text', body: `Which item would you like?` };
     case STAGES.ORDER_ENTER_QTY:
       return { type: 'text', body: `How many would you like? (e.g. "2")` };
     case STAGES.ORDER_AWAIT_ADDRESS:
@@ -1521,8 +1485,8 @@ function handleCapabilities() {
   };
 }
 
-// "I'm hungry" now branches two ways: order straight from a nearby restaurant,
-// or go through the old mood-based recommendation flow first.
+// "I'm hungry" now branches two ways: order straight from a registered
+// restaurant, or go through the old mood-based recommendation flow first.
 //
 // IMPORTANT: this button's "Order now" id is 'start_order', NOT 'order_now'.
 // 'order_now' is already used by the very first "Get started" card
@@ -1564,112 +1528,48 @@ function handleRecommendMeals() {
   };
 }
 
-// Handle user's response to "What would you like to order?"
-// Parses vendor name (if mentioned with "from") and food item, then either:
-// - Shows the vendor's menu if they specify a registered vendor
-// - Proceeds to location-based search if no vendor mentioned or vendor not found
-async function handleOrderAskWhat(text, name, session) {
-  const trimmed = (text || '').trim();
+// Given a vendor row from Supabase, build the "here's the menu" reply and
+// move the session into ORDER_SELECT_COMBO with that vendor + parsed menu
+// cached on the session.
+function buildVendorMenuReply(vendorRecord, introText) {
+  const menuItems = parseVendorMenu(vendorRecord.menu);
+  const vendor = {
+    name: vendorRecord.name,
+    phone: vendorRecord.phone,
+    vicinity: vendorRecord.vicinity || 'Registered restaurant'
+  };
 
-  if (!trimmed || trimmed.length < 2) {
-    return {
-      replies: {
-        type: 'text',
-        body: `What would you like to order? (e.g., "rice from Silver's Bites" or just "jollof rice")`
-      },
-      nextStage: STAGES.ORDER_ASK_WHAT,
-      sessionData: {}
-    };
-  }
-
-  // Try to extract vendor name if user mentioned "from [vendor]"
-  // This handles patterns like:
-  // - "rice from Silver's Bites"
-  // - "jollof rice from mama's kitchen"
-  // - "rice (from vendor)" etc.
-  let vendorNameCandidate = null;
-  let foodItem = trimmed;
-
-  const fromMatch = trimmed.match(/from\s+(.+?)$/i);
-  if (fromMatch) {
-    vendorNameCandidate = fromMatch[1].trim();
-    foodItem = trimmed.substring(0, fromMatch.index).trim();
-  }
-
-  // If user mentioned a vendor, try to look it up
-  if (vendorNameCandidate && vendorNameCandidate.length >= 2) {
-    const vendorRecord = await findVendorByName(vendorNameCandidate);
-
-    if (vendorRecord && vendorRecord.menu) {
-      const menuItems = parseVendorMenu(vendorRecord.menu);
-      if (menuItems.length > 0) {
-        const vendor = {
-          name: vendorRecord.name,
-          phone: vendorRecord.phone,
-          vicinity: vendorRecord.vicinity || 'Registered restaurant'
-        };
-
-        return {
-          replies: [
-            { type: 'text', body: `Great! Here's the menu for *${vendor.name}* 👇` },
-            getVendorMenuListReply(menuItems, `Menu for ${vendor.name}`)
-          ],
-          nextStage: STAGES.ORDER_SELECT_COMBO,
-          sessionData: { 
-            selectedVendor: vendor, 
-            menuItems,
-            orderIntent: foodItem // Store what they wanted in case we need it
-          }
-        };
-      }
-    }
-  }
-
-  // Vendor not found or user just mentioned a food item without a vendor
-  // Proceed to location-based search
   return {
     replies: [
-      { type: 'text', body: `Looking for restaurants that serve *${foodItem}*... 🛒\n\nFirst, share your location so I can find vendors near you.` },
-      getLocationRequestReply('Share your location so I can find restaurants near you 📍')
+      { type: 'text', body: introText },
+      getVendorMenuListReply(menuItems, `Menu for ${vendor.name}`)
     ],
-    nextStage: STAGES.ORDER_AWAIT_LOCATION,
-    sessionData: { orderIntent: foodItem }
+    nextStage: STAGES.ORDER_SELECT_COMBO,
+    sessionData: { selectedVendor: vendor, menuItems }
   };
 }
 
-// Kicks off ordering: ask what they want first, then look up the vendor or
-// proceed to location-based search.
-function handleOrderNow() {
-  return {
-    replies: {
-      type: 'text',
-      body: `What would you like to order? 🛒\n\n(e.g., "rice", "rice from Silver's Bites", "jollof rice from mama's kitchen")`
-    },
-    nextStage: STAGES.ORDER_ASK_WHAT,
-    sessionData: {}
-  };
-}
-
-// Triggered by the "Browse Restaurants" button — lists every onboarded
-// vendor that has a menu on file, skipping location/Geoapify entirely so the
-// customer picks straight from restaurants you actually have registered.
-async function handleBrowseRestaurants() {
+// Triggered by the "Browse Restaurants" button (and as a fallback whenever
+// no specific/valid restaurant was named) — lists every onboarded vendor
+// that has a menu on file. This is now the ONLY way restaurants are
+// discovered; there is no location search or map involved anywhere.
+async function handleBrowseRestaurants(introText = `Here are our registered restaurants 👇 Tap one to see the menu.`) {
   const vendors = await getRegisteredVendors();
 
   if (vendors.length === 0) {
     return {
       replies: {
         type: 'text',
-        body: `No registered restaurants are available to browse right now. What would you like to order? I can still search nearby.`
+        body: `No registered restaurants are available right now. Please check back later.`
       },
-      nextStage: STAGES.ORDER_ASK_WHAT,
+      nextStage: null,
       sessionData: {}
     };
   }
 
   return {
     replies: [
-      { type: 'text', body: `Here are our registered restaurants 👇 Tap one to see the menu.` },
+      { type: 'text', body: introText },
       getRegisteredVendorListReply(vendors)
     ],
     nextStage: STAGES.ORDER_SELECT_RESTAURANT,
@@ -1677,9 +1577,67 @@ async function handleBrowseRestaurants() {
   };
 }
 
+// Handle user's response to "What would you like to order?" (and the
+// equivalent free-text shortcut from buildReply). Recognizes phrasing like:
+//   "order rice from Munchy"
+//   "i want to order from Munchy"
+//   "rice from Munchy"
+//   "i want to order rice from Munchy"
+// A named restaurant is looked up directly in Supabase and, if found, its
+// real menu is shown immediately — no location step in between. If no
+// restaurant is named, or the named one isn't registered, we fall back to
+// showing the full list of onboarded restaurants to pick from.
+async function handleOrderAskWhat(text, name, session) {
+  const trimmed = (text || '').trim();
+
+  if (!trimmed || trimmed.length < 2) {
+    return {
+      replies: {
+        type: 'text',
+        body: `What would you like to order? (e.g., "rice from Munchy" or just "jollof rice")`
+      },
+      nextStage: STAGES.ORDER_ASK_WHAT,
+      sessionData: {}
+    };
+  }
+
+  const { foodItem, vendorName } = parseOrderRequest(trimmed);
+
+  if (vendorName) {
+    const vendorRecord = await findVendorByName(vendorName);
+    if (vendorRecord && vendorRecord.menu) {
+      const introText = foodItem
+        ? `Great! Looking for *${foodItem}* — here's the menu for *${vendorRecord.name}* 👇`
+        : `Great! Here's the menu for *${vendorRecord.name}* 👇`;
+      return buildVendorMenuReply(vendorRecord, introText);
+    }
+
+    return handleBrowseRestaurants(`I couldn't find *${titleCase(vendorName)}* among our registered restaurants. Here's who is available 👇`);
+  }
+
+  // No restaurant named — show every onboarded restaurant to choose from.
+  const introText = foodItem
+    ? `Looking for restaurants that serve *${foodItem}* 👇 Tap one to see their menu.`
+    : `Here are our registered restaurants 👇 Tap one to see the menu.`;
+  return handleBrowseRestaurants(introText);
+}
+
+// Kicks off ordering: ask what they want first, then look up the vendor or
+// show the full restaurant list.
+function handleOrderNow() {
+  return {
+    replies: {
+      type: 'text',
+      body: `What would you like to order? 🛒\n\n(e.g., "rice", "rice from Munchy", "i want to order from Munchy")`
+    },
+    nextStage: STAGES.ORDER_ASK_WHAT,
+    sessionData: {}
+  };
+}
+
 // One-tap reorder: reuse the vendor + combo from the user's remembered last
 // order and skip straight to confirming a delivery address, instead of
-// walking them through location -> restaurant -> combo -> qty again.
+// walking them through restaurant -> combo -> qty again.
 function handleReorderLast(profile) {
   const lastOrder = profile.lastOrder;
   if (!lastOrder) return handleOrderNow();
@@ -1725,9 +1683,13 @@ function handleAskMood(text, name, session) {
   };
 }
 
+// After health goals, instead of asking for a location we now go straight
+// into the full list of onboarded restaurants, so the user can pick one that
+// might serve something matching their mood.
 async function handleAskHealthGoals(text, name, session, shortName) {
   const selectedMood = mapMoodToCategory(session.userMood);
   const recommendations = await buildMoodReply(selectedMood, shortName, session.lastMeal || 'something');
+  const browseReply = await handleBrowseRestaurants(`Here are our registered restaurants — tap one to see if they've got something *${selectedMood}* 👇`);
 
   return {
     replies: [
@@ -1736,96 +1698,15 @@ async function handleAskHealthGoals(text, name, session, shortName) {
         body: `✨ Based on what you told me — here are my top picks for you:\n\n*${selectedMood.charAt(0).toUpperCase() + selectedMood.slice(1)} Nigerian Foods:*`
       },
       ...(Array.isArray(recommendations) ? recommendations : [recommendations]),
-      getLocationRequestReply(`Share your location so I can find restaurants near you that serve *${selectedMood}* meals 📍`)
+      ...(Array.isArray(browseReply.replies) ? browseReply.replies : [browseReply.replies])
     ],
-    // Hang on to the mood so once we get coordinates we can search for
-    // vendors that actually match what was just recommended.
-    nextStage: STAGES.AWAIT_LOCATION,
-    sessionData: { selectedMood }
+    nextStage: browseReply.nextStage,
+    sessionData: { ...(browseReply.sessionData || {}), selectedMood }
   };
 }
 
-// If the user types a place name instead of tapping "share location", try to
-// geocode it rather than dead-ending the conversation. If it's not a place at
-// all (random chatter), let Grok handle it in character, then re-prompt.
-async function handleAwaitLocation(text, name, session) {
-  const coords = await geocodeText(text);
-
-  if (!coords) {
-    const grokReply = await askGrok(text, session, { creative: true });
-    const banter = grokReply ? `${grokReply}\n\n` : `I couldn't pin that location. `;
-    return {
-      replies: {
-        type: 'text',
-        body: `${banter}📍 Tap "Share location" above, or type an area name like "Lekki, Lagos".`
-      },
-      nextStage: STAGES.AWAIT_LOCATION,
-      sessionData: { selectedMood: session.selectedMood }
-    };
-  }
-
-  return buildVendorLocationReply(coords.latitude, coords.longitude, session.selectedMood, session.orderIntent);
-}
-
-// Step 1 of ordering: we have coordinates, so pull nearby restaurants (name/
-// rating/vicinity only — no Place Details call yet, that's saved for the
-// restaurant the user actually picks, to keep API usage down) and let them
-// tap one from a list.
-async function handleOrderLocationReceived(latitude, longitude, session) {
-  const vendors = await findNearbyVendors(latitude, longitude, session.selectedMood, session.orderIntent);
-
-  if (!vendors || vendors.length === 0) {
-    return {
-      replies: {
-        type: 'text',
-        body: `I couldn't find any restaurants near that location right now. Try sharing a different area, or type a place name like "Lekki, Lagos".`
-      },
-      nextStage: STAGES.ORDER_AWAIT_LOCATION,
-      sessionData: { orderIntent: session.orderIntent }
-    };
-  }
-
-  const replyText = session.orderIntent
-    ? `Here's what's nearby that can serve ${session.orderIntent} 👇 Tap a restaurant to see the menu and pay.`
-    : session.selectedMood
-      ? `Here's where you can get *${session.selectedMood}* meals near you 👇 Tap a restaurant to see the menu and pay.`
-      : `Here's what's nearby 👇 Tap a restaurant to see the menu and pay.`;
-
-  return {
-    replies: [
-      { type: 'text', body: replyText },
-      getRestaurantListReply(vendors)
-    ],
-    nextStage: STAGES.ORDER_SELECT_RESTAURANT,
-    sessionData: { nearbyVendors: vendors, userLat: latitude, userLng: longitude, orderIntent: session.orderIntent }
-  };
-}
-
-function getRestaurantListReply(vendors, bodyText = 'Nearby restaurants') {
-  return {
-    type: 'interactive',
-    interactive: {
-      type: 'list',
-      body: { text: bodyText },
-      action: {
-        button: 'Choose',
-        sections: [
-          {
-            rows: vendors.map((v, idx) => ({
-              id: `vendor_${idx}`,
-              title: v.name.slice(0, 24),
-              description: [v.rating ? `⭐ ${v.rating}` : null, v.vicinity].filter(Boolean).join(' · ').slice(0, 72)
-            }))
-          }
-        ]
-      }
-    }
-  };
-}
-
-// Used by the "Browse Restaurants" listing — one row per onboarded vendor
-// with a menu on file, id-prefixed with `regvendor_` so it never collides
-// with the Geoapify `vendor_<idx>` ids used elsewhere.
+// Renders the full onboarded-restaurant list (one row per vendor with a menu
+// on file), id-prefixed with `regvendor_` so taps are unambiguous.
 function getRegisteredVendorListReply(vendors, bodyText = 'Our registered restaurants') {
   return {
     type: 'interactive',
@@ -1848,262 +1729,85 @@ function getRegisteredVendorListReply(vendors, bodyText = 'Our registered restau
   };
 }
 
-// Step 2: restaurant picked — either tapped from the list, or typed by hand
-// (e.g. the user names a place we didn't list, or didn't list one at all).
-//
-// FIX: this used to build the vendor object straight from the Geoapify/OSM
-// result (or from raw typed text), which has nothing to do with your
-// Supabase `vendors` table — so an onboarded vendor's real phone number and
-// real menu were never used here, only the generic ORDER_COMBOS and
-// whatever (usually empty) phone Geoapify happened to return. That's why
-// vendors weren't receiving orders and their real menu wasn't showing up.
-//
-// Now we always check the `vendors` table for a name match first. If a
-// registered vendor is found we use THEIR phone (so notifications actually
-// reach them) and THEIR real menu (parsed from what they texted in at
-// registration). Only if no match exists do we fall back to the
-// Geoapify/typed vendor + the generic combo menu.
+// Step: restaurant picked — either tapped from the registered-vendor list
+// (id `regvendor_<idx>`, resolved straight off the session, no lookup
+// needed) or typed by hand (looked up by name in Supabase). If the typed
+// name doesn't match anything registered, we don't guess or fall back to a
+// generic menu — we show the real list of onboarded restaurants instead.
 async function handleOrderSelectRestaurant(text, name, session) {
   const trimmed = (text || '').trim();
 
-  // Tap came from the "Browse Restaurants" list — we already have the full
-  // vendor record (including menu) cached on the session, no lookup needed.
   if (trimmed.startsWith('regvendor_') && Array.isArray(session.registeredVendors)) {
     const regIdx = parseInt(trimmed.replace('regvendor_', ''), 10);
     const vendorRecord = session.registeredVendors[regIdx];
 
     if (!vendorRecord) {
-      return {
-        replies: { type: 'text', body: `Please tap a restaurant from the list above 👆` },
-        nextStage: STAGES.ORDER_SELECT_RESTAURANT,
-        sessionData: { registeredVendors: session.registeredVendors }
-      };
+      return handleBrowseRestaurants(`Please tap a restaurant from the list above 👆`);
     }
 
-    const menuItems = parseVendorMenu(vendorRecord.menu);
-    const vendor = {
-      name: vendorRecord.name,
-      phone: vendorRecord.phone,
-      vicinity: vendorRecord.vicinity || 'Registered restaurant'
-    };
-
-    return {
-      replies: [
-        { type: 'text', body: `Great pick! Here's the menu for *${vendor.name}* 👇` },
-        getVendorMenuListReply(menuItems, `Menu for ${vendor.name}`)
-      ],
-      nextStage: STAGES.ORDER_SELECT_COMBO,
-      sessionData: { selectedVendor: vendor, menuItems }
-    };
+    return buildVendorMenuReply(vendorRecord, `Great pick! Here's the menu for *${vendorRecord.name}* 👇`);
   }
 
-  const idx = parseInt(trimmed.replace('vendor_', ''), 10);
-  const vendorFromList = Number.isInteger(idx) && trimmed.startsWith('vendor_') ? session.nearbyVendors?.[idx] : null;
-
-  // Not a list tap, but they typed something meaningful — treat it as their
-  // own restaurant choice rather than forcing them back to the tap-only list.
-  const candidateName = vendorFromList?.name || (trimmed.length >= 2 ? titleCase(trimmed) : null);
-
-  if (!candidateName) {
-    return {
-      replies: {
-        type: 'text',
-        body: `Please tap a restaurant from the list above 👆, or type the name of the restaurant you'd like to order from.`
-      },
-      nextStage: STAGES.ORDER_SELECT_RESTAURANT,
-      sessionData: { nearbyVendors: session.nearbyVendors, userLat: session.userLat, userLng: session.userLng }
-    };
+  if (trimmed.length < 2) {
+    return handleBrowseRestaurants(`Please tap a restaurant from the list above 👆, or type the restaurant's name.`);
   }
 
-  // Always check for a matching registered vendor first, regardless of
-  // whether the name came from the tapped list or free text.
-  const vendorRecord = await findVendorByName(candidateName);
-
+  const vendorRecord = await findVendorByName(trimmed);
   if (vendorRecord && vendorRecord.menu) {
-    const menuItems = parseVendorMenu(vendorRecord.menu);
-    if (menuItems.length > 0) {
-      const vendor = {
-        name: vendorRecord.name,
-        phone: vendorRecord.phone, // the real registered number — this is what was missing
-        vicinity: vendorRecord.vicinity || vendorFromList?.vicinity || 'Registered restaurant'
-      };
-
-      return {
-        replies: [
-          { type: 'text', body: `Great pick! Here's the menu for *${vendor.name}* 👇` },
-          getVendorMenuListReply(menuItems, `Menu for ${vendor.name}`)
-        ],
-        nextStage: STAGES.ORDER_SELECT_COMBO,
-        sessionData: { selectedVendor: vendor, menuItems, userLat: session.userLat, userLng: session.userLng }
-      };
-    }
+    return buildVendorMenuReply(vendorRecord, `Great pick! Here's the menu for *${vendorRecord.name}* 👇`);
   }
 
-  // No registered vendor found — fall back to the old behavior (generic
-  // combo menu, whatever contact info we have from Geoapify or none at all).
-  const vendor = vendorFromList || { name: candidateName, vicinity: 'Restaurant specified by customer' };
-
-  return {
-    replies: [
-      { type: 'text', body: `Great pick! Here's the menu for *${vendor.name}* 👇` },
-      getComboListReply()
-    ],
-    nextStage: STAGES.ORDER_SELECT_COMBO,
-    sessionData: { selectedVendor: vendor, userLat: session.userLat, userLng: session.userLng }
-  };
+  return handleBrowseRestaurants(`I couldn't find *${titleCase(trimmed)}* among our registered restaurants. Here's who is available 👇`);
 }
 
-function getComboListReply(bodyText = 'Rice meal combos available') {
-  return {
-    type: 'interactive',
-    interactive: {
-      type: 'list',
-      body: { text: bodyText },
-      action: {
-        button: 'Choose',
-        sections: [
-          {
-            title: 'Rice Combos',
-            rows: ORDER_COMBOS.map((combo, idx) => ({
-              id: `combo_${idx}`,
-              title: combo.title.slice(0, 24),
-              description: `${combo.description} — ₦${combo.price}`.slice(0, 72)
-            }))
-          }
-        ]
-      }
-    }
-  };
-}
-
-// Step 3 is two-phase, both handled by this same function (still one stage,
-// ORDER_SELECT_COMBO, so a stray "hi" mid-way still resumes correctly):
-//
-//   3a. User taps a combo from the list (id "combo_<idx>") -> show that
-//       combo's image with a body caption and a single "✅ Proceed" button
-//       (id "proceed_qty_<idx>"). We stay on ORDER_SELECT_COMBO — nothing is
-//       confirmed yet.
-//   3b. User taps "Proceed" (id "proceed_qty_<idx>") -> now ask for quantity
-//       as free text and advance to ORDER_ENTER_QTY.
-//
-// WhatsApp interactive "button" messages support an image header, so the
-// photo and the Proceed button travel together as one message.
+// Step: menu item picked — either tapped from the list (id "item_<idx>",
+// resolved against session.menuItems) or a stray tap of "✅ Proceed"
+// (id "proceed_qty_item_<idx>") if a two-phase confirmation was shown.
+// Menu items always come from a real vendor's registered menu now — there
+// is no generic combo fallback.
 async function handleOrderSelectCombo(text, name, session) {
   const trimmed = (text || '').trim();
+  const menuItems = Array.isArray(session.menuItems) ? session.menuItems : [];
 
-  if (trimmed.startsWith('proceed_qty_')) {
-    if (trimmed.startsWith('proceed_qty_item_') && Array.isArray(session.menuItems)) {
-      const idx = parseInt(trimmed.replace('proceed_qty_item_', ''), 10);
-      const combo = session.menuItems[idx];
-      if (!combo) {
-        return {
-          replies: { type: 'text', body: `Something went wrong — please pick a menu item again 👆` },
-          nextStage: STAGES.ORDER_SELECT_COMBO,
-          sessionData: { selectedVendor: session.selectedVendor, userLat: session.userLat, userLng: session.userLng }
-        };
-      }
-      return {
-        replies: { type: 'text', body: `*${combo.title || combo.name}* is a great choice! How many would you like? (e.g. "2")` },
-        nextStage: STAGES.ORDER_ENTER_QTY,
-        sessionData: { selectedVendor: session.selectedVendor, selectedComboIdx: idx, userLat: session.userLat, userLng: session.userLng }
-      };
-    }
-
-    const idx = parseInt(trimmed.replace('proceed_qty_', ''), 10);
-    const combo = Number.isInteger(idx) ? ORDER_COMBOS[idx] : null;
-
+  if (trimmed.startsWith('proceed_qty_item_')) {
+    const idx = parseInt(trimmed.replace('proceed_qty_item_', ''), 10);
+    const combo = menuItems[idx];
     if (!combo) {
       return {
-        replies: { type: 'text', body: `Something went wrong — please pick a meal combo again 👆` },
+        replies: { type: 'text', body: `Something went wrong — please pick a menu item again 👆` },
         nextStage: STAGES.ORDER_SELECT_COMBO,
-        sessionData: { selectedVendor: session.selectedVendor, userLat: session.userLat, userLng: session.userLng }
+        sessionData: { selectedVendor: session.selectedVendor, menuItems }
       };
     }
-
     return {
-      replies: { type: 'text', body: `*${combo.title}* is a great choice! How many would you like? (e.g. "2")` },
+      replies: { type: 'text', body: `*${combo.title || combo.name}* is a great choice! How many would you like? (e.g. "2")` },
       nextStage: STAGES.ORDER_ENTER_QTY,
-      sessionData: { selectedVendor: session.selectedVendor, selectedComboIdx: idx, userLat: session.userLat, userLng: session.userLng }
+      sessionData: { selectedVendor: session.selectedVendor, selectedComboIdx: idx, menuItems }
     };
   }
 
-  const idx = parseInt(trimmed.replace('combo_', ''), 10);
-  // Support both built-in combos (`combo_<idx>`) and vendor menu items (`item_<idx>`)
-  let combo = null;
-  if (trimmed.startsWith('combo_')) {
-    const cidx = parseInt(trimmed.replace('combo_', ''), 10);
-    combo = Number.isInteger(cidx) ? ORDER_COMBOS[cidx] : null;
-    if (combo) {
-      // normalize selectedComboIdx to numeric index
-      return {
-        replies: {
-          type: 'text',
-          body: `*${combo.title}* is a great choice! How many would you like? (e.g. "2")`
-        },
-        nextStage: STAGES.ORDER_ENTER_QTY,
-        sessionData: { selectedVendor: session.selectedVendor, selectedComboIdx: cidx, userLat: session.userLat, userLng: session.userLng }
-      };
-    }
-  }
-
-  const itemIdx = parseInt(trimmed.replace('item_', ''), 10);
-  if (trimmed.startsWith('item_') && Array.isArray(session.menuItems)) {
-    combo = session.menuItems[itemIdx] || null;
+  if (trimmed.startsWith('item_')) {
+    const itemIdx = parseInt(trimmed.replace('item_', ''), 10);
+    const combo = menuItems[itemIdx] || null;
     if (!combo) {
       return {
         replies: { type: 'text', body: `Please tap a menu item from the list above 👆` },
         nextStage: STAGES.ORDER_SELECT_COMBO,
-        sessionData: { selectedVendor: session.selectedVendor, userLat: session.userLat, userLng: session.userLng }
+        sessionData: { selectedVendor: session.selectedVendor, menuItems }
       };
     }
 
-    const bodyText = `*${combo.title || combo.name}*\n${combo.description || ''}${combo.price ? `\n₦${combo.price}` : ''}`;
-    const proceedButton = { type: 'reply', reply: { id: `proceed_qty_item_${itemIdx}`, title: '✅ Proceed' } };
-
-    const reply = {
-      type: 'interactive',
-      interactive: {
-        type: 'button',
-        body: { text: bodyText },
-        action: { buttons: [proceedButton] }
-      }
-    };
-
     return {
-      replies: reply,
-      nextStage: STAGES.ORDER_SELECT_COMBO,
-      sessionData: { selectedVendor: session.selectedVendor, selectedComboIdx: itemIdx, userLat: session.userLat, userLng: session.userLng, menuItems: session.menuItems }
+      replies: { type: 'text', body: `*${combo.title || combo.name}* is a great choice! How many would you like? (e.g. "2")` },
+      nextStage: STAGES.ORDER_ENTER_QTY,
+      sessionData: { selectedVendor: session.selectedVendor, selectedComboIdx: itemIdx, menuItems }
     };
   }
+
   return {
-    replies: { type: 'text', body: `Please tap a meal combo from the list above 👆` },
+    replies: { type: 'text', body: `Please tap a menu item from the list above 👆` },
     nextStage: STAGES.ORDER_SELECT_COMBO,
-    sessionData: { selectedVendor: session.selectedVendor, userLat: session.userLat, userLng: session.userLng }
-  };
-}
-
-function getOrderMenuListReply(bodyText = 'Menu') {
-  const sections = {};
-  ORDER_MENU_ITEMS.forEach((item, idx) => {
-    const sectionTitle = item.category.charAt(0).toUpperCase() + item.category.slice(1);
-    if (!sections[sectionTitle]) sections[sectionTitle] = [];
-    sections[sectionTitle].push({
-      id: `item_${idx}`,
-      title: item.name.slice(0, 24),
-      description: `${item.description} — ~${item.kcal} kcal`.slice(0, 72)
-    });
-  });
-
-  return {
-    type: 'interactive',
-    interactive: {
-      type: 'list',
-      body: { text: bodyText },
-      action: {
-        button: 'Choose',
-        sections: Object.entries(sections).map(([title, rows]) => ({ title, rows }))
-      }
-    }
+    sessionData: { selectedVendor: session.selectedVendor, menuItems }
   };
 }
 
@@ -2186,11 +1890,12 @@ async function createPaystackTransaction(email, amount) {
   }
 }
 
-// Step 4: quantity given. We do NOT create a Paystack link yet — we still need
+// Step: quantity given. We do NOT create a Paystack link yet — we still need
 // an exact delivery address, so stash the qty on the session and move to the
 // address step instead of paying here.
 function handleOrderEnterQty(text, name, session, shortName) {
-  const combo = Array.isArray(session.menuItems) ? session.menuItems[session.selectedComboIdx] : ORDER_COMBOS[session.selectedComboIdx];
+  const menuItems = Array.isArray(session.menuItems) ? session.menuItems : [];
+  const combo = menuItems[session.selectedComboIdx];
   const vendor = session.selectedVendor;
   const parsedQty = parseInt((text || '').replace(/[^0-9]/g, ''), 10);
   const qty = Number.isInteger(parsedQty) && parsedQty > 0 ? Math.min(parsedQty, 20) : 1;
@@ -2210,9 +1915,7 @@ function handleOrderEnterQty(text, name, session, shortName) {
       selectedVendor: vendor,
       selectedComboIdx: session.selectedComboIdx,
       qty,
-      userLat: session.userLat,
-      userLng: session.userLng,
-      menuItems: session.menuItems
+      menuItems
     }
   };
 }
@@ -2234,12 +1937,13 @@ function isLikelyValidAddress(text) {
   return true;
 }
 
-// Step 5: exact delivery address given. Only now do we talk to Paystack and
+// Step: exact delivery address given. Only now do we talk to Paystack and
 // notify staff — this is the payment gate the user asked for. We also save a
 // `lastOrder` snapshot to the user's persistent profile so a future greeting
 // can offer a one-tap reorder.
 async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
-  const combo = Array.isArray(session.menuItems) ? session.menuItems[session.selectedComboIdx] : ORDER_COMBOS[session.selectedComboIdx];
+  const menuItems = Array.isArray(session.menuItems) ? session.menuItems : [];
+  const combo = menuItems[session.selectedComboIdx];
   const vendor = session.selectedVendor;
   const qty = session.qty;
 
@@ -2259,9 +1963,7 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
         selectedVendor: vendor,
         selectedComboIdx: session.selectedComboIdx,
         qty,
-        userLat: session.userLat,
-        userLng: session.userLng,
-        menuItems: session.menuItems
+        menuItems
       }
     };
   }
@@ -2349,7 +2051,7 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
 // file — WhatsApp won't let us free-form message the restaurant itself unless
 // it has an open session with this bot or we use an approved template.
 async function sendOrderNotification({ customerName, item, qty, vendor, address, paymentUrl, orderId }) {
-  const body = `🆕 New order from ${customerName}:\n${qty} x ${item.title || item.name}\nRestaurant: ${vendor.name} (${vendor.vicinity || 'location shared'})${address ? `\nDeliver to: ${address}` : ''}${paymentUrl ? `\nPayment: ${paymentUrl}` : ''}`;
+  const body = `🆕 New order from ${customerName}:\n${qty} x ${item.title || item.name}\nRestaurant: ${vendor.name} (${vendor.vicinity || 'registered restaurant'})${address ? `\nDeliver to: ${address}` : ''}${paymentUrl ? `\nPayment: ${paymentUrl}` : ''}`;
   const recipients = [];
 
   if (vendor?.phone) {
@@ -2378,28 +2080,6 @@ async function sendOrderNotification({ customerName, item, qty, vendor, address,
   }
 }
 
-// Same fallback pattern as handleAwaitLocation, but for the order flow: if the
-// user types a place name instead of tapping "share location", geocode it and
-// carry on to the restaurant list.
-async function handleOrderAwaitLocationText(text, name, session) {
-  const coords = await geocodeText(text);
-
-  if (!coords) {
-    const grokReply = await askGrok(text, session, { creative: true });
-    const banter = grokReply ? `${grokReply}\n\n` : `I couldn't pin that location. `;
-    return {
-      replies: {
-        type: 'text',
-        body: `${banter}📍 Tap "Share location" above, or type an area name like "Lekki, Lagos".`
-      },
-      nextStage: STAGES.ORDER_AWAIT_LOCATION,
-      sessionData: { orderIntent: session.orderIntent }
-    };
-  }
-
-  return handleOrderLocationReceived(coords.latitude, coords.longitude, session);
-}
-
 function handleMealPlanPlaceholder() {
   return {
     replies: {
@@ -2414,15 +2094,27 @@ const STAGE_HANDLERS = {
   [STAGES.ASK_LAST_MEAL]: handleAskLastMeal,
   [STAGES.ASK_MOOD]: handleAskMood,
   [STAGES.ASK_HEALTH_GOALS]: handleAskHealthGoals,
-  [STAGES.AWAIT_LOCATION]: handleAwaitLocation,
   [STAGES.ORDER_ASK_WHAT]: handleOrderAskWhat,
-  [STAGES.ORDER_AWAIT_LOCATION]: handleOrderAwaitLocationText,
   [STAGES.ORDER_SELECT_RESTAURANT]: handleOrderSelectRestaurant,
   [STAGES.ORDER_SELECT_COMBO]: handleOrderSelectCombo,
   [STAGES.ORDER_ENTER_QTY]: handleOrderEnterQty,
   [STAGES.ORDER_AWAIT_ADDRESS]: handleOrderAwaitAddress,
   [STAGES.DRIVER_AWAIT_VEHICLE_TYPE]: handleDriverVehicleType
 };
+
+// Quick heuristic for "does this free text, sent with no active stage, read
+// as an order request?" — used to route straight into handleOrderAskWhat
+// (which does the real vendor-name/food-item parsing) instead of falling
+// through to Grok banter. Deliberately generous: a "from <name>" mention or
+// the word "order" is enough, since handleOrderAskWhat itself degrades
+// gracefully (showing the full restaurant list) if nothing useful is found.
+function looksLikeOrderRequest(text) {
+  const normalized = (text || '').toLowerCase();
+  if (/\bfrom\s+[a-z0-9]/i.test(normalized)) return true;
+  if (/\border\b/.test(normalized)) return true;
+  if (/\b(want|need|crave|feed me|serve me)\b/.test(normalized) && /\b(rice|beans?|jollof|food|meal|meals?)\b/.test(normalized)) return true;
+  return false;
+}
 
 async function buildReply(text, name = 'friend', session = {}, phone) {
   const normalized = text.trim().toLowerCase();
@@ -2456,7 +2148,7 @@ async function buildReply(text, name = 'friend', session = {}, phone) {
   if (normalized === 'get_meal_plan') return handleMealPlanPlaceholder();
   // When a new user taps "Order now" from the initial "Get started" card,
   // show the hungry prompt (order now / recommend meals) rather than
-  // immediately asking for location — this matches the UX in the screenshot.
+  // immediately asking what to order — this matches the UX in the screenshot.
   if (normalized === 'order_now') return handleHungry();
   // When the user taps "🛒 Order now" from the hungry prompt itself, actually
   // move the flow forward and ask what they'd like to order.
@@ -2479,58 +2171,15 @@ async function buildReply(text, name = 'friend', session = {}, phone) {
     return handleCapabilities();
   }
 
-  if (normalized.includes('hungry')) return handleHungry();
-
-  // Only treat free text like "rice" or "I want jollof" as an order-intent
-  // shortcut when the user ISN'T already mid-flow. Otherwise this was
-  // hijacking structured answers — e.g. typing "Rice" to answer "What did
-  // you last eat?" would derail straight into the order flow instead of
-  // reaching the mood-picker stage handler below.
-  if (!session.stage) {
-    const orderIntent = detectOrderFoodRequest(normalized);
-    if (orderIntent) {
-        const namedVendor = detectVendorNameFromText(text);
-        if (namedVendor) {
-          const lookupName = titleCase(namedVendor);
-          // Try to find a registered vendor with this name and show their menu
-          const vendorRecord = await findVendorByName(lookupName);
-
-          if (vendorRecord && vendorRecord.menu) {
-            const menuItems = parseVendorMenu(vendorRecord.menu);
-            if (menuItems.length > 0) {
-              return {
-                replies: [
-                  { type: 'text', body: `Got it — ordering ${orderIntent} from *${vendorRecord.name}*. Here's the menu 👇` },
-                  getVendorMenuListReply(menuItems, `Menu for ${vendorRecord.name}`)
-                ],
-                nextStage: STAGES.ORDER_SELECT_COMBO,
-                sessionData: { selectedVendor: { name: vendorRecord.name, phone: vendorRecord.phone, vicinity: vendorRecord.vicinity }, menuItems }
-              };
-            }
-          }
-
-          // Fallback to free-form vendor (no registered menu)
-          const vendor = { name: lookupName, vicinity: 'Restaurant specified by customer' };
-          return {
-            replies: [
-              { type: 'text', body: `Got it — ordering ${orderIntent} from *${vendor.name}*. Here's the menu 👇` },
-              getComboListReply()
-            ],
-            nextStage: STAGES.ORDER_SELECT_COMBO,
-            sessionData: { selectedVendor: vendor }
-          };
-        }
-
-      return {
-        replies: [
-          { type: 'text', body: `Got it! I can search restaurants nearby that offer ${orderIntent}. Share your location or type your area — or just tell me the restaurant name if you already know where you're ordering from.` },
-          getLocationRequestReply()
-        ],
-        nextStage: STAGES.ORDER_AWAIT_LOCATION,
-        sessionData: { orderIntent }
-      };
-    }
+  // Direct order phrasing ("order rice from Munchy", "rice from Munchy",
+  // "i want to order from Munchy"...) is recognized straight from free text,
+  // even with no active stage, and routed into the same vendor-lookup logic
+  // used by the ORDER_ASK_WHAT stage handler.
+  if (!session.stage && looksLikeOrderRequest(normalized)) {
+    return handleOrderAskWhat(text, name, session);
   }
+
+  if (normalized.includes('hungry')) return handleHungry();
 
   const handler = STAGE_HANDLERS[session.stage];
   if (handler) return handler(text, name, session, shortName, phone);
@@ -2603,19 +2252,6 @@ function getMoodButtonsReply(bodyText = 'Got it! Tap a category button or type a
   };
 }
 
-// Native WhatsApp "request location" message — shows a button that opens the
-// device's location picker and sends back a message.type === 'location' payload.
-function getLocationRequestReply(bodyText = 'Share your location so I can show you vendors near you 📍') {
-  return {
-    type: 'interactive',
-    interactive: {
-      type: 'location_request_message',
-      body: { text: bodyText },
-      action: { name: 'send_location' }
-    }
-  };
-}
-
 const localImageExistsCache = new Map();
 
 function localImageExists(filename) {
@@ -2642,114 +2278,8 @@ async function resolveImageUrl(item) {
   return null;
 }
 
-// Geoapify Places API (free tier: 3,000 requests/day, no billing account
-// required — see https://www.geoapify.com/places-api/). Data comes from
-// OpenStreetMap, so it won't have Google-style ratings/reviews, but it covers
-// the "find restaurants near these coordinates" job for free. Note: Geoapify's
-// filter/bias params take coordinates as lon,lat (GeoJSON order), the
-// opposite of the lat,lng order used elsewhere in this file — easy to get
-// backwards, so it's called out explicitly in the query string below.
-async function findNearbyVendors(latitude, longitude, mood, orderIntent) {
-  if (!GEOAPIFY_API_KEY) {
-    console.warn('Geoapify API key is not configured; cannot look up nearby vendors.');
-    return null;
-  }
-
-  const categories = MOOD_PLACE_CATEGORIES[mood] || DEFAULT_PLACE_CATEGORIES;
-  const vendors = await fetchGeoapifyPlaces(latitude, longitude, categories);
-
-  // If the mood-specific category search comes up empty, fall back to the
-  // broader restaurant/fast-food/cafe search rather than dead-ending —
-  // better to show *something* nearby than nothing at all.
-  if ((!vendors || vendors.length === 0) && categories !== DEFAULT_PLACE_CATEGORIES) {
-    return fetchGeoapifyPlaces(latitude, longitude, DEFAULT_PLACE_CATEGORIES);
-  }
-
-  return vendors;
-}
-
-// Note: Geoapify's filter/bias params take coordinates as lon,lat (GeoJSON
-// order), the opposite of the lat,lng order used elsewhere in this file —
-// easy to get backwards, so it's called out explicitly in the query string below.
-async function fetchGeoapifyPlaces(latitude, longitude, categories) {
-  try {
-    const url = `https://api.geoapify.com/v2/places`
-      + `?categories=${encodeURIComponent(categories)}`
-      + `&filter=circle:${longitude},${latitude},5000` // lon,lat,radius(m) — lon first
-      + `&bias=proximity:${longitude},${latitude}` // lon,lat — lon first
-      + `&limit=10`
-      + `&apiKey=${encodeURIComponent(GEOAPIFY_API_KEY)}`;
-
-    const response = await fetch(url);
-    if (!response.ok) {
-      const errorBody = await response.json().catch(() => null);
-      console.error(`Geoapify places search HTTP error ${response.status}:`, errorBody?.message || errorBody);
-      return [];
-    }
-
-    const data = await response.json();
-    const features = data.features || [];
-
-    return features.slice(0, 10).map((f) => {
-      const p = f.properties || {};
-      return {
-        name: p.name || p.address_line1 || 'Unnamed restaurant',
-        vicinity: p.formatted || p.address_line2 || '',
-        rating: null, // Geoapify/OSM doesn't provide star ratings
-        lat: p.lat,
-        lng: p.lon,
-        phone: p.contact?.phone || p.datasource?.raw?.phone || null,
-        place_id: p.place_id
-      };
-    });
-  } catch (error) {
-    console.error('Geoapify places search failed:', error);
-    return null;
-  }
-}
-
-function distanceKm(lat1, lon1, lat2, lon2) {
-  const R = 6371;
-  const toRad = (deg) => (deg * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a = Math.sin(dLat / 2) ** 2
-    + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
-}
-
-// Geoapify already returns everything we need (name, address, coordinates)
-// in the single /v2/places call inside findNearbyVendors, so — unlike the old
-// Google integration — there's no separate "details" round trip needed here.
-// OSM-sourced data doesn't reliably expose ratings, live open/closed status,
-// or delivery/dine-in/takeout flags, so those simply come through as unknown.
-async function enrichVendor(vendor, userLat, userLng) {
-  return {
-    name: vendor.name,
-    vicinity: vendor.vicinity,
-    rating: vendor.rating,
-    openNow: null,
-    closingTime: null,
-    serviceText: vendor.phone ? `📞 ${vendor.phone}` : 'Contact info unavailable',
-    distanceKm: (vendor.lat != null && vendor.lng != null) ? distanceKm(userLat, userLng, vendor.lat, vendor.lng) : null,
-    lat: vendor.lat,
-    lng: vendor.lng
-  };
-}
-
-function formatVendorCard(v, mood) {
-  const stars = v.rating ? '⭐'.repeat(Math.round(v.rating)) : '';
-  const statusText = v.closingTime
-    ? `Closes ${v.closingTime}`
-    : (v.openNow === true ? 'Open now' : v.openNow === false ? 'Closed now' : 'Hours unknown');
-  const distanceText = v.distanceKm != null ? `${v.distanceKm.toFixed(1)} km away` : '';
-  const moodTag = mood ? `\n🍽 Good for: ${mood.charAt(0).toUpperCase() + mood.slice(1)} cravings` : '';
-
-  return `*${v.name}*\n${statusText} · ${v.serviceText}${stars ? ` ${stars}` : ''}\n${distanceText}${moodTag}`.trim();
-}
-
-// Quick-reply buttons shown after vendor cards, so the user has an obvious
-// next move instead of having to type something.
+// Quick-reply buttons shown after an order confirmation, so the user has an
+// obvious next move instead of having to type something.
 function getPostVendorButtonsReply(bodyText = 'What would you like to do next?') {
   return {
     type: 'interactive',
@@ -2811,81 +2341,6 @@ function getDriverAcceptButtonsReply(orderId) {
         ]
       }
     }
-  };
-}
-
-// Fallback for when the user types a place name instead of tapping "share location".
-async function geocodeText(query) {
-  if (!GOOGLE_API_KEY) return null;
-
-  try {
-    const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(query)}&key=${encodeURIComponent(GOOGLE_API_KEY)}`;
-    const response = await fetch(url);
-    if (!response.ok) return null;
-    const data = await response.json();
-    const loc = data.results?.[0]?.geometry?.location;
-    return loc ? { latitude: loc.lat, longitude: loc.lng } : null;
-  } catch (error) {
-    console.error('Geocoding failed:', error);
-    return null;
-  }
-}
-
-// Builds the reply once we have real coordinates: one card-style text message
-// per vendor (status, service type, rating, distance — mirrors the mockup),
-// then a location pin per vendor, then the follow-up action buttons.
-async function buildVendorLocationReply(latitude, longitude, mood, orderIntent) {
-  const vendors = await findNearbyVendors(latitude, longitude, mood, orderIntent);
-
-  if (!vendors || vendors.length === 0) {
-    return {
-      replies: [
-        {
-          type: 'text',
-          body: `I couldn't find vendors near you right now — try Jollof House, Healthy Eats NG, or a local food vendor nearby. 🏪`
-        },
-        getPostVendorButtonsReply()
-      ],
-      nextStage: null
-    };
-  }
-
-  // Show a few enriched cards + pins as context (distance, contact, status),
-  // then a tappable list so the user can actually pick one and order/pay
-  // instead of just being pointed at a pin with nothing to do next.
-  const topVendors = vendors.slice(0, 3);
-  const enriched = await Promise.all(topVendors.map((v) => enrichVendor(v, latitude, longitude)));
-
-  const introText = mood
-    ? `Here's where you can get *${mood}* meals near you 👇`
-    : `Here's what's nearby 👇`;
-
-  const infoReplies = [
-    { type: 'text', body: introText },
-    ...enriched.map((v) => ({ type: 'text', body: formatVendorCard(v, mood) }))
-  ];
-
-  for (const v of enriched) {
-    if (v.lat != null && v.lng != null) {
-      infoReplies.push({
-        type: 'location',
-        location: { latitude: v.lat, longitude: v.lng, name: v.name, address: v.vicinity || '' }
-      });
-    }
-  }
-
-  const orderPromptText = mood
-    ? `Tap a restaurant below to see the menu and pay 👇`
-    : `Tap a restaurant below to order 👇`;
-
-  return {
-    replies: [
-      ...infoReplies,
-      { type: 'text', body: orderPromptText },
-      getRestaurantListReply(vendors)
-    ],
-    nextStage: STAGES.ORDER_SELECT_RESTAURANT,
-    sessionData: { nearbyVendors: vendors, userLat: latitude, userLng: longitude, selectedMood: mood, orderIntent }
   };
 }
 
