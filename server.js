@@ -61,7 +61,8 @@ const STAGES = {
   ASK_MOOD: 'askMood',
   ASK_HEALTH_GOALS: 'askHealthGoals',
   AWAIT_LOCATION: 'awaitLocation',
-  // Ordering flow: location -> pick a restaurant -> pick a menu item -> qty -> address -> payment.
+  // Ordering flow: ask what they want -> pick a restaurant -> pick a menu item -> qty -> address -> payment.
+  ORDER_ASK_WHAT: 'orderAskWhat',
   ORDER_AWAIT_LOCATION: 'orderAwaitLocation',
   ORDER_SELECT_RESTAURANT: 'orderSelectRestaurant',
   ORDER_SELECT_COMBO: 'orderSelectCombo',
@@ -90,6 +91,7 @@ const STAGE_LABELS = {
   [STAGES.ASK_MOOD]: 'picking a mood',
   [STAGES.ASK_HEALTH_GOALS]: 'sharing your health goals',
   [STAGES.AWAIT_LOCATION]: 'sharing your location for vendor recommendations',
+  [STAGES.ORDER_ASK_WHAT]: 'telling me what you want to order',
   [STAGES.ORDER_AWAIT_LOCATION]: 'sharing your location to order',
   [STAGES.ORDER_SELECT_RESTAURANT]: 'picking a restaurant',
   [STAGES.ORDER_SELECT_COMBO]: 'picking a meal combo',
@@ -1525,15 +1527,88 @@ function handleRecommendMeals() {
   };
 }
 
-// Kicks off ordering: ask for the user's location first, then use it to pull
-// real nearby restaurants via findNearbyVendors (see handleOrderLocationReceived).
-function handleOrderNow() {
+// Handle user's response to "What would you like to order?"
+// Parses vendor name (if mentioned with "from") and food item, then either:
+// - Shows the vendor's menu if they specify a registered vendor
+// - Proceeds to location-based search if no vendor mentioned or vendor not found
+async function handleOrderAskWhat(text, name, session) {
+  const trimmed = (text || '').trim();
+
+  if (!trimmed || trimmed.length < 2) {
+    return {
+      replies: {
+        type: 'text',
+        body: `What would you like to order? (e.g., "rice from Silver's Bites" or just "jollof rice")`
+      },
+      nextStage: STAGES.ORDER_ASK_WHAT,
+      sessionData: {}
+    };
+  }
+
+  // Try to extract vendor name if user mentioned "from [vendor]"
+  // This handles patterns like:
+  // - "rice from Silver's Bites"
+  // - "jollof rice from mama's kitchen"
+  // - "rice (from vendor)" etc.
+  let vendorNameCandidate = null;
+  let foodItem = trimmed;
+
+  const fromMatch = trimmed.match(/from\s+(.+?)$/i);
+  if (fromMatch) {
+    vendorNameCandidate = fromMatch[1].trim();
+    foodItem = trimmed.substring(0, fromMatch.index).trim();
+  }
+
+  // If user mentioned a vendor, try to look it up
+  if (vendorNameCandidate && vendorNameCandidate.length >= 2) {
+    const vendorRecord = await findVendorByName(vendorNameCandidate);
+
+    if (vendorRecord && vendorRecord.menu) {
+      const menuItems = parseVendorMenu(vendorRecord.menu);
+      if (menuItems.length > 0) {
+        const vendor = {
+          name: vendorRecord.name,
+          phone: vendorRecord.phone,
+          vicinity: vendorRecord.vicinity || 'Registered restaurant'
+        };
+
+        return {
+          replies: [
+            { type: 'text', body: `Great! Here's the menu for *${vendor.name}* 👇` },
+            getVendorMenuListReply(menuItems, `Menu for ${vendor.name}`)
+          ],
+          nextStage: STAGES.ORDER_SELECT_COMBO,
+          sessionData: { 
+            selectedVendor: vendor, 
+            menuItems,
+            orderIntent: foodItem // Store what they wanted in case we need it
+          }
+        };
+      }
+    }
+  }
+
+  // Vendor not found or user just mentioned a food item without a vendor
+  // Proceed to location-based search
   return {
     replies: [
-      { type: 'text', body: `Let's get you fed 🛒 First, share your location so I can show you restaurants near you.` },
+      { type: 'text', body: `Looking for restaurants that serve *${foodItem}*... 🛒\n\nFirst, share your location so I can find vendors near you.` },
       getLocationRequestReply('Share your location so I can find restaurants near you 📍')
     ],
     nextStage: STAGES.ORDER_AWAIT_LOCATION,
+    sessionData: { orderIntent: foodItem }
+  };
+}
+
+// Kicks off ordering: ask what they want first, then look up the vendor or
+// proceed to location-based search.
+function handleOrderNow() {
+  return {
+    replies: {
+      type: 'text',
+      body: `What would you like to order? 🛒\n\n(e.g., "rice", "rice from Silver's Bites", "jollof rice from mama's kitchen")`
+    },
+    nextStage: STAGES.ORDER_ASK_WHAT,
     sessionData: {}
   };
 }
@@ -2219,6 +2294,7 @@ const STAGE_HANDLERS = {
   [STAGES.ASK_MOOD]: handleAskMood,
   [STAGES.ASK_HEALTH_GOALS]: handleAskHealthGoals,
   [STAGES.AWAIT_LOCATION]: handleAwaitLocation,
+  [STAGES.ORDER_ASK_WHAT]: handleOrderAskWhat,
   [STAGES.ORDER_AWAIT_LOCATION]: handleOrderAwaitLocationText,
   [STAGES.ORDER_SELECT_RESTAURANT]: handleOrderSelectRestaurant,
   [STAGES.ORDER_SELECT_COMBO]: handleOrderSelectCombo,
