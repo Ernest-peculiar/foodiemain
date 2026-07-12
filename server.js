@@ -596,10 +596,19 @@ async function handleDispatchPayload(payload, phone, session) {
     const { data: orderRow, error } = await supabase.from('orders').select('*').eq('id', orderId).maybeSingle();
     if (!error && orderRow) {
       if (orderRow.customer_phone) {
-        await sendWhatsAppMessage(orderRow.customer_phone, {
-          type: 'text',
-          body: `🚚 ${driver.name} has accepted your order and is on the way.`
-        });
+        // Send the rider's photo alongside their name so the customer can
+        // actually recognize who's showing up, not just read a name.
+        const riderCaption = `🚚 ${driver.name} has accepted your order and is on the way to pick it up.`
+          + (driver.vehicle_type ? `\nVehicle: ${driver.vehicle_type}` : '');
+        if (driver.photo_url) {
+          await sendWhatsAppMessage(orderRow.customer_phone, {
+            type: 'image',
+            imageUrl: driver.photo_url,
+            caption: riderCaption
+          });
+        } else {
+          await sendWhatsAppMessage(orderRow.customer_phone, { type: 'text', body: riderCaption });
+        }
       }
 
       if (orderRow.vendor_id) {
@@ -631,7 +640,10 @@ async function handleDispatchPayload(payload, phone, session) {
     }
 
     return {
-      replies: { type: 'text', body: '✅ You accepted the delivery. Please update status when you pick up the order.' },
+      replies: [
+        { type: 'text', body: '✅ You accepted the delivery.' },
+        getDriverPickedUpButtonsReply(orderId)
+      ],
       nextStage: null,
       sessionData: session
     };
@@ -696,7 +708,8 @@ async function handleDispatchPayload(payload, phone, session) {
     }
 
     if (updatedOrder.customer_phone) {
-      await sendWhatsAppMessage(updatedOrder.customer_phone, { type: 'text', body: '✅ Your order has been delivered. Thank you for ordering with us.' });
+      await sendWhatsAppMessage(updatedOrder.customer_phone, { type: 'text', body: '🚚 Your rider says your order has arrived!' });
+      await sendWhatsAppMessage(updatedOrder.customer_phone, getCustomerConfirmDeliveryButtonsReply(orderId));
     }
 
     return {
@@ -705,6 +718,53 @@ async function handleDispatchPayload(payload, phone, session) {
       ],
       nextStage: STAGES.DRIVER_AWAIT_PHOTO,
       sessionData: { ...session, pendingPhotoOrderId: orderId }
+    };
+  }
+
+  // Customer taps "✅ Confirm delivery" on the prompt sent above.
+  const confirmDeliveryMatch = normalized.match(/^customer_confirm_delivery_([0-9a-f-]+)$/i);
+  if (confirmDeliveryMatch) {
+    const [, orderId] = confirmDeliveryMatch;
+    const { data: orderRow, error } = await supabase.from('orders').select('*').eq('id', orderId).maybeSingle();
+
+    if (error || !orderRow || normalizePhone(orderRow.customer_phone) !== normalizePhone(phone)) {
+      return {
+        replies: { type: 'text', body: 'I could not find that order to confirm.' },
+        nextStage: null,
+        sessionData: session
+      };
+    }
+
+    // Requires a nullable `customer_confirmed_at timestamptz` column on `orders`:
+    //   alter table orders add column if not exists customer_confirmed_at timestamptz;
+    await dispatch.updateOrderStatus(supabase, orderId, { customer_confirmed_at: new Date().toISOString() });
+
+    if (orderRow.driver_id) {
+      const { data: driverRow } = await supabase.from('drivers').select('*').eq('id', orderRow.driver_id).maybeSingle();
+      if (driverRow?.phone) {
+        await sendWhatsAppMessage(driverRow.phone, { type: 'text', body: `✅ The customer confirmed they received order ${orderId}. Thanks for the delivery!` });
+      }
+    }
+
+    return {
+      replies: { type: 'text', body: '🙏 Thanks for confirming! Enjoy your meal.' },
+      nextStage: null,
+      sessionData: session
+    };
+  }
+
+  // Customer taps "⚠️ Report issue" instead — ping staff rather than
+  // auto-confirming, so a human can follow up.
+  const reportIssueMatch = normalized.match(/^customer_report_issue_([0-9a-f-]+)$/i);
+  if (reportIssueMatch) {
+    const [, orderId] = reportIssueMatch;
+    if (ORDER_NOTIFY_NUMBER) {
+      await sendWhatsAppMessage(ORDER_NOTIFY_NUMBER, { type: 'text', body: `⚠️ Customer reported an issue with order ${orderId}. Please follow up.` });
+    }
+    return {
+      replies: { type: 'text', body: `I'm sorry to hear that. Our team has been notified and will follow up with you shortly.` },
+      nextStage: null,
+      sessionData: session
     };
   }
 
@@ -2338,6 +2398,43 @@ function getDriverAcceptButtonsReply(orderId) {
       action: {
         buttons: [
           { type: 'reply', reply: { id: `driver_accept_${orderId}`, title: 'Accept' } }
+        ]
+      }
+    }
+  };
+}
+
+// NEW — shown to the driver right after they accept a delivery, so they have
+// an obvious next tap once they've physically picked up the order from the
+// restaurant. Produces the `driver_pickup_<orderId>` payload already handled
+// by the `pickupMatch` branch in handleDispatchPayload.
+function getDriverPickedUpButtonsReply(orderId, bodyText = 'Let us know when you have the order in hand.') {
+  return {
+    type: 'interactive',
+    interactive: {
+      type: 'button',
+      body: { text: bodyText },
+      action: {
+        buttons: [
+          { type: 'reply', reply: { id: `driver_pickup_${orderId}`, title: 'Picked up' } }
+        ]
+      }
+    }
+  };
+}
+
+// NEW — shown to the customer once the driver marks the order delivered, so
+// they can confirm receipt (or flag a problem) with a tap instead of typing.
+function getCustomerConfirmDeliveryButtonsReply(orderId, bodyText = 'Has your order arrived?') {
+  return {
+    type: 'interactive',
+    interactive: {
+      type: 'button',
+      body: { text: bodyText },
+      action: {
+        buttons: [
+          { type: 'reply', reply: { id: `customer_confirm_delivery_${orderId}`, title: '✅ Confirm delivery' } },
+          { type: 'reply', reply: { id: `customer_report_issue_${orderId}`, title: '⚠️ Report issue' } }
         ]
       }
     }
