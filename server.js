@@ -1494,6 +1494,14 @@ function handleCapabilities() {
 
 // "I'm hungry" now branches two ways: order straight from a nearby restaurant,
 // or go through the old mood-based recommendation flow first.
+//
+// IMPORTANT: this button's "Order now" id is 'start_order', NOT 'order_now'.
+// 'order_now' is already used by the very first "Get started" card
+// (getNewUserButtonsReply) and is wired to handleHungry() itself — reusing
+// the same id here would mean tapping "Order now" a second time just
+// re-triggers handleHungry() again and re-sends this same prompt forever
+// (an infinite loop) instead of moving forward to "What would you like to
+// order?" (handleOrderNow()). Keep these two ids distinct.
 function getHungryButtonsReply(bodyText = "Want me to help you order now, or find some recommendations first?") {
   return {
     type: 'interactive',
@@ -1502,7 +1510,7 @@ function getHungryButtonsReply(bodyText = "Want me to help you order now, or fin
       body: { text: bodyText },
       action: {
         buttons: [
-          { type: 'reply', reply: { id: 'order_now', title: '🛒 Order now' } },
+          { type: 'reply', reply: { id: 'start_order', title: '🛒 Order now' } },
           { type: 'reply', reply: { id: 'recommend_meals', title: '✨ Recommend meals' } }
         ]
       }
@@ -2317,6 +2325,14 @@ async function buildReply(text, name = 'friend', session = {}, phone) {
   }
 
   // Quick-reply buttons shown after vendor recommendations / the hungry prompt.
+  //
+  // NOTE: 'order_now' (from the very first "Get started" card) and
+  // 'start_order' (from the "Order now / Recommend meals" card shown by
+  // handleHungry) are deliberately different ids routed to different
+  // handlers. Previously both buttons used the same id 'order_now', which
+  // meant tapping "Order now" a second time just called handleHungry()
+  // again and re-sent the same two buttons instead of asking "What would
+  // you like to order?" — an infinite loop. Keep them separate.
   if (normalized === 'start_over') return handleGreeting("let's start over", shortName, await getProfile(phone), phone);
   if (normalized === 'resume_flow') {
     // Re-send the current stage's prompt without consuming this tap as input
@@ -2325,10 +2341,13 @@ async function buildReply(text, name = 'friend', session = {}, phone) {
   }
   if (normalized === 'try_different_meals') return handleHungry();
   if (normalized === 'get_meal_plan') return handleMealPlanPlaceholder();
-  // When a new user taps "Order now" from the initial card, show the
-  // hungry prompt (order now / recommend meals) rather than immediately
-  // asking for location — this matches the UX in the screenshot.
+  // When a new user taps "Order now" from the initial "Get started" card,
+  // show the hungry prompt (order now / recommend meals) rather than
+  // immediately asking for location — this matches the UX in the screenshot.
   if (normalized === 'order_now') return handleHungry();
+  // When the user taps "🛒 Order now" from the hungry prompt itself, actually
+  // move the flow forward and ask what they'd like to order.
+  if (normalized === 'start_order') return handleOrderNow();
   if (normalized === 'recommend_meals') return handleRecommendMeals();
   if (normalized === 'reorder_last') return handleReorderLast(await getProfile(phone));
   // From the "Welcome back" reorder card: skip straight into the normal
