@@ -61,7 +61,8 @@ const STAGES = {
   ASK_MOOD: 'askMood',
   ASK_HEALTH_GOALS: 'askHealthGoals',
   AWAIT_LOCATION: 'awaitLocation',
-  // Ordering flow: location -> pick a restaurant -> pick a menu item -> qty -> address -> payment.
+  // Ordering flow: item -> location -> pick a restaurant -> pick a menu item -> qty -> address -> payment.
+  ORDER_ASK_ITEM: 'orderAskItem',
   ORDER_AWAIT_LOCATION: 'orderAwaitLocation',
   ORDER_SELECT_RESTAURANT: 'orderSelectRestaurant',
   ORDER_SELECT_COMBO: 'orderSelectCombo',
@@ -90,6 +91,7 @@ const STAGE_LABELS = {
   [STAGES.ASK_MOOD]: 'picking a mood',
   [STAGES.ASK_HEALTH_GOALS]: 'sharing your health goals',
   [STAGES.AWAIT_LOCATION]: 'sharing your location for vendor recommendations',
+  [STAGES.ORDER_ASK_ITEM]: 'telling me what you want to order',
   [STAGES.ORDER_AWAIT_LOCATION]: 'sharing your location to order',
   [STAGES.ORDER_SELECT_RESTAURANT]: 'picking a restaurant',
   [STAGES.ORDER_SELECT_COMBO]: 'picking a meal combo',
@@ -1457,6 +1459,8 @@ async function getStageResumeReply(session) {
       return { type: 'text', body: `Any health goals I should know about?` };
     case STAGES.AWAIT_LOCATION:
       return getLocationRequestReply();
+    case STAGES.ORDER_ASK_ITEM:
+      return { type: 'text', body: `What would you like to order?` };
     case STAGES.ORDER_AWAIT_LOCATION:
       return getLocationRequestReply('Share your location so I can find restaurants near you 📍');
     case STAGES.ORDER_SELECT_RESTAURANT:
@@ -1525,16 +1529,82 @@ function handleRecommendMeals() {
   };
 }
 
-// Kicks off ordering: ask for the user's location first, then use it to pull
-// real nearby restaurants via findNearbyVendors (see handleOrderLocationReceived).
+// Kicks off ordering: FIRST ask what the user wants to order (free text),
+// THEN ask for their location so we can find restaurants that serve it (see
+// handleOrderAskItem). This used to jump straight to asking for location,
+// which — combined with the "Order now" button routing to handleHungry()
+// instead of here — made tapping "Order now" look like it did nothing.
 function handleOrderNow() {
   return {
+    replies: {
+      type: 'text',
+      body: `Awesome 🛒 What would you like to order? (e.g. "jollof rice", "suya", "rice and beans")`
+    },
+    nextStage: STAGES.ORDER_ASK_ITEM,
+    sessionData: {}
+  };
+}
+
+// Step 0 of ordering: user has told us what they want (free text). Stash it
+// as `orderIntent` and move on to asking for location.
+function handleOrderAskItem(text, name, session) {
+  const orderIntent = (text || '').trim();
+
+  if (!orderIntent) {
+    return {
+      replies: { type: 'text', body: `What would you like to order? (e.g. "jollof rice", "suya")` },
+      nextStage: STAGES.ORDER_ASK_ITEM,
+      sessionData: {}
+    };
+  }
+
+  const namedVendor = detectVendorNameFromText(text);
+  if (namedVendor) {
+    // User named a specific restaurant inline (e.g. "rice from Glamour") —
+    // skip the location step entirely and go straight to that vendor's menu,
+    // same as the equivalent shortcut in buildReply().
+    return handleNamedVendorOrder(orderIntent, namedVendor);
+  }
+
+  return {
     replies: [
-      { type: 'text', body: `Let's get you fed 🛒 First, share your location so I can show you restaurants near you.` },
+      { type: 'text', body: `Great — let's find you *${orderIntent}* 🍽️` },
       getLocationRequestReply('Share your location so I can find restaurants near you 📍')
     ],
     nextStage: STAGES.ORDER_AWAIT_LOCATION,
-    sessionData: {}
+    sessionData: { orderIntent }
+  };
+}
+
+// Shared helper: user named a specific restaurant while telling us what they
+// want to order. Looks up a registered vendor's real menu, falling back to
+// the generic combo menu if there's no match.
+async function handleNamedVendorOrder(orderIntent, namedVendor) {
+  const lookupName = titleCase(namedVendor);
+  const vendorRecord = await findVendorByName(lookupName);
+
+  if (vendorRecord && vendorRecord.menu) {
+    const menuItems = parseVendorMenu(vendorRecord.menu);
+    if (menuItems.length > 0) {
+      return {
+        replies: [
+          { type: 'text', body: `Got it — ordering ${orderIntent} from *${vendorRecord.name}*. Here's the menu 👇` },
+          getVendorMenuListReply(menuItems, `Menu for ${vendorRecord.name}`)
+        ],
+        nextStage: STAGES.ORDER_SELECT_COMBO,
+        sessionData: { selectedVendor: { name: vendorRecord.name, phone: vendorRecord.phone, vicinity: vendorRecord.vicinity }, menuItems }
+      };
+    }
+  }
+
+  const vendor = { name: lookupName, vicinity: 'Restaurant specified by customer' };
+  return {
+    replies: [
+      { type: 'text', body: `Got it — ordering ${orderIntent} from *${vendor.name}*. Here's the menu 👇` },
+      getComboListReply()
+    ],
+    nextStage: STAGES.ORDER_SELECT_COMBO,
+    sessionData: { selectedVendor: vendor }
   };
 }
 
@@ -2219,6 +2289,7 @@ const STAGE_HANDLERS = {
   [STAGES.ASK_MOOD]: handleAskMood,
   [STAGES.ASK_HEALTH_GOALS]: handleAskHealthGoals,
   [STAGES.AWAIT_LOCATION]: handleAwaitLocation,
+  [STAGES.ORDER_ASK_ITEM]: handleOrderAskItem,
   [STAGES.ORDER_AWAIT_LOCATION]: handleOrderAwaitLocationText,
   [STAGES.ORDER_SELECT_RESTAURANT]: handleOrderSelectRestaurant,
   [STAGES.ORDER_SELECT_COMBO]: handleOrderSelectCombo,
@@ -2249,14 +2320,15 @@ async function buildReply(text, name = 'friend', session = {}, phone) {
   }
   if (normalized === 'try_different_meals') return handleHungry();
   if (normalized === 'get_meal_plan') return handleMealPlanPlaceholder();
-  // When a new user taps "Order now" from the initial card, show the
-  // hungry prompt (order now / recommend meals) rather than immediately
-  // asking for location — this matches the UX in the screenshot.
-  if (normalized === 'order_now') return handleHungry();
+  // FIX: "Order now" must actually start the order flow (ask what to order),
+  // not redisplay the same Order now / Recommend meals choice — that was the
+  // bug where tapping the button appeared to do nothing.
+  if (normalized === 'order_now') return handleOrderNow();
   if (normalized === 'recommend_meals') return handleRecommendMeals();
   if (normalized === 'reorder_last') return handleReorderLast(await getProfile(phone));
   // From the "Welcome back" reorder card: skip straight into the normal
-  // order flow (location -> restaurant list) instead of reusing last time's vendor.
+  // order flow (ask what to order -> location -> restaurant list) instead of
+  // reusing last time's vendor.
   if (normalized === 'browse_restaurants') return handleOrderNow();
   // From the same card: open up the broader options (order now / recommend
   // meals) rather than assuming they want another order at all.
@@ -2281,37 +2353,10 @@ async function buildReply(text, name = 'friend', session = {}, phone) {
   if (!session.stage) {
     const orderIntent = detectOrderFoodRequest(normalized);
     if (orderIntent) {
-        const namedVendor = detectVendorNameFromText(text);
-        if (namedVendor) {
-          const lookupName = titleCase(namedVendor);
-          // Try to find a registered vendor with this name and show their menu
-          const vendorRecord = await findVendorByName(lookupName);
-
-          if (vendorRecord && vendorRecord.menu) {
-            const menuItems = parseVendorMenu(vendorRecord.menu);
-            if (menuItems.length > 0) {
-              return {
-                replies: [
-                  { type: 'text', body: `Got it — ordering ${orderIntent} from *${vendorRecord.name}*. Here's the menu 👇` },
-                  getVendorMenuListReply(menuItems, `Menu for ${vendorRecord.name}`)
-                ],
-                nextStage: STAGES.ORDER_SELECT_COMBO,
-                sessionData: { selectedVendor: { name: vendorRecord.name, phone: vendorRecord.phone, vicinity: vendorRecord.vicinity }, menuItems }
-              };
-            }
-          }
-
-          // Fallback to free-form vendor (no registered menu)
-          const vendor = { name: lookupName, vicinity: 'Restaurant specified by customer' };
-          return {
-            replies: [
-              { type: 'text', body: `Got it — ordering ${orderIntent} from *${vendor.name}*. Here's the menu 👇` },
-              getComboListReply()
-            ],
-            nextStage: STAGES.ORDER_SELECT_COMBO,
-            sessionData: { selectedVendor: vendor }
-          };
-        }
+      const namedVendor = detectVendorNameFromText(text);
+      if (namedVendor) {
+        return handleNamedVendorOrder(orderIntent, namedVendor);
+      }
 
       return {
         replies: [
