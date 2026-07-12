@@ -2687,7 +2687,7 @@ async function buildVendorLocationReply(latitude, longitude, mood, orderIntent) 
     };
   }
 
-  // Show a few enriched cards + pins as context (distance, contact, status),
+  
   // then a tappable list so the user can actually pick one and order/pay
   // instead of just being pointed at a pin with nothing to do next.
   const topVendors = vendors.slice(0, 3);
