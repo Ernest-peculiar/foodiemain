@@ -324,6 +324,32 @@ async function findVendorByName(candidateName) {
   return null;
 }
 
+// All onboarded vendors that have a menu on file — used for the "Browse
+// Restaurants" listing, so customers pick from vendors you actually have
+// registered instead of only Geoapify's generic place search.
+async function getRegisteredVendors() {
+  if (!supabase) return [];
+
+  const { data, error } = await supabase
+    .from('vendors')
+    .select('*')
+    .not('menu', 'is', null);
+
+  if (error) {
+    console.error('Failed to fetch registered vendors:', error.message);
+    return [];
+  }
+
+  // Column naming for is_active/is_open may vary depending on how
+  // upsertVendor persists them — check both snake_case and camelCase and
+  // default to "available" if the field isn't present at all.
+  return (data || []).filter((v) => {
+    const isActive = v.is_active ?? v.isActive ?? true;
+    const isOpen = v.is_open ?? v.isOpen ?? true;
+    return isActive !== false && isOpen !== false && !!v.menu;
+  });
+}
+
 async function resolveSenderRole(phone) {
   if (!phone) return 'customer';
   const vendor = await getVendorRecordByPhone(phone);
@@ -1462,6 +1488,9 @@ async function getStageResumeReply(session) {
     case STAGES.ORDER_AWAIT_LOCATION:
       return getLocationRequestReply('Share your location so I can find restaurants near you 📍');
     case STAGES.ORDER_SELECT_RESTAURANT:
+      if (session.registeredVendors?.length) {
+        return [{ type: 'text', body: `Here are our restaurants again 👇` }, getRegisteredVendorListReply(session.registeredVendors)];
+      }
       return session.nearbyVendors?.length
         ? [{ type: 'text', body: `Here's what was nearby 👇 Tap a restaurant to choose.` }, getRestaurantListReply(session.nearbyVendors)]
         : { type: 'text', body: `Which restaurant would you like to order from?` };
@@ -1621,6 +1650,33 @@ function handleOrderNow() {
   };
 }
 
+// Triggered by the "Browse Restaurants" button — lists every onboarded
+// vendor that has a menu on file, skipping location/Geoapify entirely so the
+// customer picks straight from restaurants you actually have registered.
+async function handleBrowseRestaurants() {
+  const vendors = await getRegisteredVendors();
+
+  if (vendors.length === 0) {
+    return {
+      replies: {
+        type: 'text',
+        body: `No registered restaurants are available to browse right now. What would you like to order? I can still search nearby.`
+      },
+      nextStage: STAGES.ORDER_ASK_WHAT,
+      sessionData: {}
+    };
+  }
+
+  return {
+    replies: [
+      { type: 'text', body: `Here are our registered restaurants 👇 Tap one to see the menu.` },
+      getRegisteredVendorListReply(vendors)
+    ],
+    nextStage: STAGES.ORDER_SELECT_RESTAURANT,
+    sessionData: { registeredVendors: vendors }
+  };
+}
+
 // One-tap reorder: reuse the vendor + combo from the user's remembered last
 // order and skip straight to confirming a delivery address, instead of
 // walking them through location -> restaurant -> combo -> qty again.
@@ -1767,6 +1823,31 @@ function getRestaurantListReply(vendors, bodyText = 'Nearby restaurants') {
   };
 }
 
+// Used by the "Browse Restaurants" listing — one row per onboarded vendor
+// with a menu on file, id-prefixed with `regvendor_` so it never collides
+// with the Geoapify `vendor_<idx>` ids used elsewhere.
+function getRegisteredVendorListReply(vendors, bodyText = 'Our registered restaurants') {
+  return {
+    type: 'interactive',
+    interactive: {
+      type: 'list',
+      body: { text: bodyText },
+      action: {
+        button: 'Choose',
+        sections: [
+          {
+            rows: vendors.map((v, idx) => ({
+              id: `regvendor_${idx}`,
+              title: v.name.slice(0, 24),
+              description: (v.vicinity || 'Tap to see menu').slice(0, 72)
+            }))
+          }
+        ]
+      }
+    }
+  };
+}
+
 // Step 2: restaurant picked — either tapped from the list, or typed by hand
 // (e.g. the user names a place we didn't list, or didn't list one at all).
 //
@@ -1784,6 +1865,38 @@ function getRestaurantListReply(vendors, bodyText = 'Nearby restaurants') {
 // Geoapify/typed vendor + the generic combo menu.
 async function handleOrderSelectRestaurant(text, name, session) {
   const trimmed = (text || '').trim();
+
+  // Tap came from the "Browse Restaurants" list — we already have the full
+  // vendor record (including menu) cached on the session, no lookup needed.
+  if (trimmed.startsWith('regvendor_') && Array.isArray(session.registeredVendors)) {
+    const regIdx = parseInt(trimmed.replace('regvendor_', ''), 10);
+    const vendorRecord = session.registeredVendors[regIdx];
+
+    if (!vendorRecord) {
+      return {
+        replies: { type: 'text', body: `Please tap a restaurant from the list above 👆` },
+        nextStage: STAGES.ORDER_SELECT_RESTAURANT,
+        sessionData: { registeredVendors: session.registeredVendors }
+      };
+    }
+
+    const menuItems = parseVendorMenu(vendorRecord.menu);
+    const vendor = {
+      name: vendorRecord.name,
+      phone: vendorRecord.phone,
+      vicinity: vendorRecord.vicinity || 'Registered restaurant'
+    };
+
+    return {
+      replies: [
+        { type: 'text', body: `Great pick! Here's the menu for *${vendor.name}* 👇` },
+        getVendorMenuListReply(menuItems, `Menu for ${vendor.name}`)
+      ],
+      nextStage: STAGES.ORDER_SELECT_COMBO,
+      sessionData: { selectedVendor: vendor, menuItems }
+    };
+  }
+
   const idx = parseInt(trimmed.replace('vendor_', ''), 10);
   const vendorFromList = Number.isInteger(idx) && trimmed.startsWith('vendor_') ? session.nearbyVendors?.[idx] : null;
 
@@ -2350,9 +2463,9 @@ async function buildReply(text, name = 'friend', session = {}, phone) {
   if (normalized === 'start_order') return handleOrderNow();
   if (normalized === 'recommend_meals') return handleRecommendMeals();
   if (normalized === 'reorder_last') return handleReorderLast(await getProfile(phone));
-  // From the "Welcome back" reorder card: skip straight into the normal
-  // order flow (location -> restaurant list) instead of reusing last time's vendor.
-  if (normalized === 'browse_restaurants') return handleOrderNow();
+  // From the "Welcome back" reorder card: show all onboarded vendors and
+  // their menus instead of reusing last time's vendor.
+  if (normalized === 'browse_restaurants') return handleBrowseRestaurants();
   // From the same card: open up the broader options (order now / recommend
   // meals) rather than assuming they want another order at all.
   if (normalized === 'something_different') return handleHungry();
