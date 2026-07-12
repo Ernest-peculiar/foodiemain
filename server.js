@@ -887,14 +887,24 @@ async function handleDeliveryPhotoMessage(message, phone, session) {
 //    from the device gallery — that distinction isn't exposed by the API.
 //    So "must be taken on WhatsApp" is enforced by instruction only (the
 //    prompt text below), not verified technically.
-// 2. This calls dispatch.uploadDriverPhoto(...), which exists in
-//    lib/order-dispatch.js (mirroring uploadDeliveryPhoto), and self-heals
-//    the storage bucket's public/private setting on every call — see
-//    ensureBucketIsPublic() there for why that matters.
-// 3. dispatch.upsertDriver(...) accepts and persists `photoUrl` and
-//    `vehicleType`. `photo_url text` and `vehicle_type text` columns
-//    (nullable, for existing drivers) must exist on the `drivers` table —
-//    see supabase-schema.sql.
+// 2. This calls dispatch.uploadDriverPhoto(...), which must exist in
+//    lib/order-dispatch.js (mirroring the existing uploadDeliveryPhoto).
+//    Example implementation, assuming a public `driver-photos` Storage
+//    bucket:
+//
+//      async function uploadDriverPhoto(supabase, phone, buffer, mimeType, filename) {
+//        const { data, error } = await supabase.storage
+//          .from('driver-photos')
+//          .upload(`${phone}/${filename}`, buffer, { contentType: mimeType, upsert: true });
+//        if (error) throw error;
+//        const { data: pub } = supabase.storage.from('driver-photos').getPublicUrl(data.path);
+//        return pub.publicUrl;
+//      }
+//
+// 3. dispatch.upsertDriver(...) needs to accept and persist `photoUrl` and
+//    `vehicleType`. Add `photo_url text` and `vehicle_type text` columns
+//    (nullable, for existing drivers) to the `drivers` table in
+//    supabase-schema.sql, and pass them through in upsertDriver's payload.
 async function handleDriverRegistrationPhoto(message, phone, session) {
   if (message.type !== 'image' || !message.image?.id) {
     return {
@@ -2483,8 +2493,8 @@ function getDriverAcceptButtonsReply(orderId) {
   };
 }
 
-// Shown to the driver right after they accept a delivery, so they have an
-// obvious next tap once they've physically picked up the order from the
+// NEW — shown to the driver right after they accept a delivery, so they have
+// an obvious next tap once they've physically picked up the order from the
 // restaurant. Produces the `driver_pickup_<orderId>` payload already handled
 // by the `pickupMatch` branch in handleDispatchPayload.
 function getDriverPickedUpButtonsReply(orderId, bodyText = 'Let us know when you have the order in hand.') {
@@ -2502,8 +2512,8 @@ function getDriverPickedUpButtonsReply(orderId, bodyText = 'Let us know when you
   };
 }
 
-// Shown to the customer once the driver marks the order delivered, so they
-// can confirm receipt (or flag a problem) with a tap instead of typing.
+// NEW — shown to the customer once the driver marks the order delivered, so
+// they can confirm receipt (or flag a problem) with a tap instead of typing.
 function getCustomerConfirmDeliveryButtonsReply(orderId, bodyText = 'Has your order arrived?') {
   return {
     type: 'interactive',
@@ -2520,24 +2530,13 @@ function getCustomerConfirmDeliveryButtonsReply(orderId, bodyText = 'Has your or
   };
 }
 
-// Low-level POST to the WhatsApp Graph API. Extracted out of
-// sendWhatsAppMessage so it can be called twice — once for the intended
-// message, and once more as a text fallback if an image send fails.
-async function postWhatsAppPayload(payload) {
-  const url = `https://graph.facebook.com/${WHATSAPP_API_VERSION}/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(payload)
-  });
-  const data = await response.json().catch(() => ({}));
-  return { ok: response.ok, data };
-}
+async function sendWhatsAppMessage(to, reply) {
+  if (!WHATSAPP_TOKEN || !WHATSAPP_PHONE_NUMBER_ID) {
+    console.warn('WhatsApp credentials are not configured.');
+    return;
+  }
 
-function buildWhatsAppPayload(to, reply) {
+  const url = `https://graph.facebook.com/${WHATSAPP_API_VERSION}/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
   const payload = {
     messaging_product: 'whatsapp',
     to,
@@ -2556,42 +2555,23 @@ function buildWhatsAppPayload(to, reply) {
     payload.text = { body: reply.body };
   }
 
-  return payload;
-}
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(payload)
+  });
+  const data = await response.json().catch(() => ({}));
 
-// FIXED: previously, if an image send failed (e.g. the image URL wasn't
-// publicly fetchable — see ensureBucketIsPublic() in order-dispatch.js for
-// the classic cause), sendWhatsAppMessage logged a console.error and simply
-// stopped. The recipient got nothing at all, with no visible sign anything
-// was wrong. Now, an image failure automatically retries as a plain text
-// message using the same caption/body, so the recipient still gets the
-// information (driver name, vehicle, phone, etc.) even if the photo itself
-// couldn't be delivered.
-async function sendWhatsAppMessage(to, reply) {
-  if (!WHATSAPP_TOKEN || !WHATSAPP_PHONE_NUMBER_ID) {
-    console.warn('WhatsApp credentials are not configured.');
-    return;
-  }
-
-  let effectiveReply = reply;
-  let { ok, data } = await postWhatsAppPayload(buildWhatsAppPayload(to, reply));
-
-  if (!ok && reply.type === 'image') {
-    console.error(`Image message to ${to} failed, falling back to text:`, data);
-    const fallbackText = reply.caption || reply.body;
-    if (fallbackText) {
-      effectiveReply = { type: 'text', body: fallbackText };
-      ({ ok, data } = await postWhatsAppPayload(buildWhatsAppPayload(to, effectiveReply)));
-    }
-  }
-
-  if (!ok) {
+  if (!response.ok) {
     console.error('Failed to send WhatsApp message:', data);
   } else if (DEBUG) {
     console.log('✅ Message sent successfully!', data);
   }
 
-  await logMessage(to, 'outbound', effectiveReply.type, effectiveReply.body || effectiveReply.caption || null, effectiveReply);
+  await logMessage(to, 'outbound', reply.type, reply.body || reply.caption || null, reply);
 }
 
 app.listen(PORT, () => {
