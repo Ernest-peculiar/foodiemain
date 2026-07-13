@@ -650,45 +650,28 @@ async function handleDispatchPayload(payload, phone, session) {
 
     const { data: orderRow, error } = await supabase.from('orders').select('*').eq('id', orderId).maybeSingle();
     if (!error && orderRow) {
-      // --- Notify the customer, with the rider's photo ----------------------
       if (orderRow.customer_phone) {
         // Send the rider's photo alongside their name so the customer can
         // actually recognize who's showing up, not just read a name.
         const riderCaption = `🚚 ${driver.name} has accepted your order and is on the way to pick it up.`
           + (driver.vehicle_type ? `\nVehicle: ${driver.vehicle_type}` : '');
-
         if (driver.photo_url) {
-          try {
-            await sendWhatsAppMessage(orderRow.customer_phone, {
-              type: 'image',
-              imageUrl: driver.photo_url,
-              caption: riderCaption
-            });
-          } catch (error) {
-            // If the image send fails (e.g. the driver-photos bucket isn't
-            // actually public yet — see ensureDriverPhotoBucket note in
-            // order-dispatch.js) don't leave the customer with nothing: fall
-            // back to text so they still get the rider's name.
-            console.error(`Failed to send driver photo to customer for order ${orderId}:`, error.message || error);
-            await sendWhatsAppMessage(orderRow.customer_phone, { type: 'text', body: riderCaption });
-          }
+          await sendWhatsAppMessage(orderRow.customer_phone, {
+            type: 'image',
+            imageUrl: driver.photo_url,
+            caption: riderCaption
+          });
         } else {
-          console.warn(`Driver ${driver.id} (${driver.phone}) has no photo_url on file — sending text-only notification to customer for order ${orderId}.`);
           await sendWhatsAppMessage(orderRow.customer_phone, { type: 'text', body: riderCaption });
         }
       }
 
-      // --- Notify the vendor, with the rider's photo -------------------------
       if (orderRow.vendor_id) {
         const { data: vendorRecord, error: vendorError } = await supabase
           .from('vendors')
           .select('*')
           .eq('id', orderRow.vendor_id)
           .maybeSingle();
-
-        if (vendorError) {
-          console.error(`Vendor lookup failed while notifying about driver assignment for order ${orderId}:`, vendorError.message);
-        }
 
         const caption = `✅ ${driver.name} has accepted the delivery and is on the way to pick up the order.`;
         const vendorTarget = (vendorRecord && vendorRecord.phone) ? vendorRecord.phone : ORDER_NOTIFY_NUMBER;
@@ -697,18 +680,12 @@ async function handleDispatchPayload(payload, phone, session) {
           // Build caption with additional driver info
           const infoCaption = `${caption}\n\nRider: ${driver.name || 'Unknown'}${driver.vehicle_type ? `\nVehicle: ${driver.vehicle_type}` : ''}${driver.phone ? `\nPhone: ${driver.phone}` : ''}`;
           if (driver.photo_url) {
-            try {
-              await sendWhatsAppMessage(vendorTarget, {
-                type: 'image',
-                imageUrl: driver.photo_url,
-                caption: infoCaption
-              });
-            } catch (error) {
-              console.error(`Failed to send driver photo to vendor for order ${orderId}:`, error.message || error);
-              await sendWhatsAppMessage(vendorTarget, { type: 'text', body: infoCaption });
-            }
+            await sendWhatsAppMessage(vendorTarget, {
+              type: 'image',
+              imageUrl: driver.photo_url,
+              caption: infoCaption
+            });
           } else {
-            console.warn(`Driver ${driver.id} (${driver.phone}) has no photo_url on file — sending text-only notification to vendor for order ${orderId}.`);
             await sendWhatsAppMessage(vendorTarget, { type: 'text', body: infoCaption });
           }
         } else {
@@ -912,6 +889,18 @@ async function handleDeliveryPhotoMessage(message, phone, session) {
 //    prompt text below), not verified technically.
 // 2. This calls dispatch.uploadDriverPhoto(...), which must exist in
 //    lib/order-dispatch.js (mirroring the existing uploadDeliveryPhoto).
+//    Example implementation, assuming a public `driver-photos` Storage
+//    bucket:
+//
+//      async function uploadDriverPhoto(supabase, phone, buffer, mimeType, filename) {
+//        const { data, error } = await supabase.storage
+//          .from('driver-photos')
+//          .upload(`${phone}/${filename}`, buffer, { contentType: mimeType, upsert: true });
+//        if (error) throw error;
+//        const { data: pub } = supabase.storage.from('driver-photos').getPublicUrl(data.path);
+//        return pub.publicUrl;
+//      }
+//
 // 3. dispatch.upsertDriver(...) needs to accept and persist `photoUrl` and
 //    `vehicleType`. Add `photo_url text` and `vehicle_type text` columns
 //    (nullable, for existing drivers) to the `drivers` table in
@@ -2504,8 +2493,8 @@ function getDriverAcceptButtonsReply(orderId) {
   };
 }
 
-// Shown to the driver right after they accept a delivery, so they have an
-// obvious next tap once they've physically picked up the order from the
+// NEW — shown to the driver right after they accept a delivery, so they have
+// an obvious next tap once they've physically picked up the order from the
 // restaurant. Produces the `driver_pickup_<orderId>` payload already handled
 // by the `pickupMatch` branch in handleDispatchPayload.
 function getDriverPickedUpButtonsReply(orderId, bodyText = 'Let us know when you have the order in hand.') {
@@ -2523,8 +2512,8 @@ function getDriverPickedUpButtonsReply(orderId, bodyText = 'Let us know when you
   };
 }
 
-// Shown to the customer once the driver marks the order delivered, so they
-// can confirm receipt (or flag a problem) with a tap instead of typing.
+// NEW — shown to the customer once the driver marks the order delivered, so
+// they can confirm receipt (or flag a problem) with a tap instead of typing.
 function getCustomerConfirmDeliveryButtonsReply(orderId, bodyText = 'Has your order arrived?') {
   return {
     type: 'interactive',
@@ -2578,7 +2567,6 @@ async function sendWhatsAppMessage(to, reply) {
 
   if (!response.ok) {
     console.error('Failed to send WhatsApp message:', data);
-    throw new Error(data?.error?.message || `WhatsApp send failed with status ${response.status}`);
   } else if (DEBUG) {
     console.log('✅ Message sent successfully!', data);
   }
