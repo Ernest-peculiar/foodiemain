@@ -3,6 +3,7 @@ require('dotenv').config();
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
 const dispatch = require('./lib/order-dispatch');
 const app = express();
@@ -193,6 +194,16 @@ function parseEmail(text) {
 
 function normalizePhone(phone) {
   return (phone || '').replace(/\D/g, '');
+}
+
+// Generated BEFORE we ever call Paystack, and passed in as the `reference`
+// field on transaction/initialize. Paystack always echoes the reference back
+// on every webhook event, so this is what lets the webhook handler match a
+// "charge.success" event back to the right row in `orders` — Paystack's own
+// auto-generated reference would work too, but generating our own means we
+// can save it on the order record *before* the payment even completes.
+function generatePaymentReference() {
+  return `foodie_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
 }
 
 function isValidWhatsAppPayload(body) {
@@ -1234,7 +1245,13 @@ async function logMessage(phone, direction, messageType, body, payload) {
   if (error) console.error('Supabase logMessage failed:', error.message);
 }
 
-app.use(express.json());
+// `verify` stashes the raw bytes on the request before express.json() parses
+// them into req.body. Paystack's webhook signature is an HMAC over the exact
+// raw request body — signing the re-serialized (parsed-then-stringified)
+// JSON can produce a different byte sequence (key order, spacing) and fail
+// verification, so the webhook handler below uses req.rawBody, not
+// JSON.stringify(req.body).
+app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf; } }));
 app.use('/images', express.static(path.join(__dirname, 'public/images')));
 
 app.get('/', (req, res) => {
@@ -1287,6 +1304,78 @@ app.post('/webhook', async (req, res) => {
   }
 
   res.sendStatus(200);
+});
+
+// Paystack calls this after every transaction event (success, failed,
+// reversed, etc). This is the ONLY reliable point at which we know money
+// actually moved — the payment link created in handleOrderAwaitAddress is
+// just a link, not a completed payment. On a verified "charge.success" we
+// mark the order paid and fire off a receipt to both the customer and the
+// vendor.
+//
+// SETUP REQUIRED (outside this file):
+// 1. In the Paystack dashboard, set the webhook URL to
+//    `${PUBLIC_URL}/paystack/webhook`.
+// 2. `orders` needs these nullable columns (also noted in
+//    lib/order-dispatch.js, which is what actually writes them):
+//      alter table orders add column if not exists payment_reference text unique;
+//      alter table orders add column if not exists paid_at timestamptz;
+//      alter table orders add column if not exists payment_status text;
+//      alter table orders add column if not exists customer_email text;
+app.post('/paystack/webhook', express.json({ verify: (req, res, buf) => { req.rawBody = buf; } }), async (req, res) => {
+  // Always ack quickly — Paystack retries on non-2xx, and we don't want a
+  // slow downstream WhatsApp send to cause duplicate webhook deliveries.
+  res.sendStatus(200);
+
+  if (!PAYSTACK_SECRET_KEY) {
+    console.warn('Paystack webhook received but PAYSTACK_SECRET_KEY is not configured — ignoring.');
+    return;
+  }
+
+  const signature = req.headers['x-paystack-signature'];
+  const expectedSignature = crypto
+    .createHmac('sha512', PAYSTACK_SECRET_KEY)
+    .update(req.rawBody || Buffer.from(JSON.stringify(req.body || {})))
+    .digest('hex');
+
+  if (!signature || signature !== expectedSignature) {
+    console.error('Paystack webhook signature verification failed — ignoring event.');
+    return;
+  }
+
+  const event = req.body;
+  if (!event || event.event !== 'charge.success') {
+    // Other event types (failed charges, refunds, etc.) — nothing to do for
+    // receipts here, but this is where that handling would go if needed.
+    return;
+  }
+
+  const reference = event.data?.reference;
+  if (!reference || !supabase) return;
+
+  try {
+    const order = await dispatch.getOrderByPaymentReference(supabase, reference);
+
+    if (!order) {
+      console.error(`Paystack webhook: no order found for reference ${reference}`);
+      return;
+    }
+
+    // Idempotency guard — Paystack can and does redeliver webhooks. If we've
+    // already marked this order paid (and presumably already sent receipts),
+    // don't send them a second time.
+    if (order.paid_at) {
+      if (DEBUG) console.log(`Order ${order.id} already marked paid — skipping duplicate webhook.`);
+      return;
+    }
+
+    const paidAt = new Date().toISOString();
+    await dispatch.updateOrderStatus(supabase, order.id, { paid_at: paidAt, payment_status: 'paid' });
+
+    await sendPaymentReceipts({ ...order, paid_at: paidAt });
+  } catch (err) {
+    console.error('Failed to process Paystack webhook:', err);
+  }
 });
 
 async function handleIncomingMessage(message, value) {
@@ -1976,7 +2065,7 @@ function getRoundedAmount(amount) {
   return Math.round(amount * 100);
 }
 
-async function createPaystackTransaction(email, amount) {
+async function createPaystackTransaction(email, amount, reference) {
   if (!PAYSTACK_SECRET_KEY) return null;
 
   try {
@@ -1990,6 +2079,7 @@ async function createPaystackTransaction(email, amount) {
         email,
         amount: getRoundedAmount(amount),
         currency: 'NGN',
+        reference,
         callback_url: `${PUBLIC_URL}/paystack/callback`
       })
     });
@@ -2087,6 +2177,7 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
   const email = parseEmail(text) || `${name.replace(/\s+/g, '.').toLowerCase()}@example.com`;
   const unitPrice = (combo && (combo.price || combo.price === 0)) ? Number(combo.price) : 0;
   let payment = null;
+  let paymentReference = null;
   const totalAmount = unitPrice * qty;
 
   let paymentMessage = '';
@@ -2098,10 +2189,15 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
     const notifyBody = `⚠️ Customer ${name} attempted to order ${qty} x ${combo.title || combo.name} but no price is set for this item. Please update your menu to include prices so customers can pay.`;
     if (vendorTarget) await sendWhatsAppMessage(vendorTarget, { type: 'text', body: notifyBody });
   } else {
-    payment = await createPaystackTransaction(email, unitPrice * qty);
+    paymentReference = generatePaymentReference();
+    payment = await createPaystackTransaction(email, unitPrice * qty, paymentReference);
     paymentMessage = payment
       ? `Please complete payment here: ${payment.authorization_url}`
       : `I couldn't create the payment link right now. Please try again later or contact support.`;
+    // If Paystack init failed outright, there's no live transaction to match
+    // a webhook against — clear the reference so we don't store a dangling
+    // one on the order.
+    if (!payment) paymentReference = null;
   }
 
   const orderRecord = await dispatch.createOrderRecord(supabase, {
@@ -2119,6 +2215,16 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
     deliveryFee: 0,
     total: totalAmount,
     deliveryAddress: address,
+    // Persisted via dispatch.createOrderRecord as payment_reference /
+    // customer_email — see lib/order-dispatch.js. Requires the
+    // payment_reference (nullable, unique), paid_at, payment_status, and
+    // customer_email columns on `orders` (schema noted there too):
+    //   alter table orders add column if not exists payment_reference text unique;
+    //   alter table orders add column if not exists paid_at timestamptz;
+    //   alter table orders add column if not exists payment_status text;
+    //   alter table orders add column if not exists customer_email text;
+    paymentReference,
+    customerEmail: email,
     status: 'pending_vendor'
   });
 
@@ -2199,6 +2305,72 @@ async function sendOrderNotification({ customerName, item, qty, vendor, address,
     for (const reply of replies) {
       await sendWhatsAppMessage(recipient, reply);
     }
+  }
+}
+
+// --- Payment receipts -------------------------------------------------------
+// Built once we get a *confirmed* payment (a "charge.success" webhook event
+// from Paystack — see the /paystack/webhook route below), never at the point
+// we merely generate a payment link. A generated link is not a completed
+// payment; sending a "receipt" before money has actually moved would be
+// misleading.
+function formatReceiptDate(isoString) {
+  try {
+    return new Date(isoString || Date.now()).toLocaleString('en-NG', { dateStyle: 'medium', timeStyle: 'short' });
+  } catch {
+    return new Date().toISOString();
+  }
+}
+
+function buildReceiptText(order, { forVendor = false } = {}) {
+  const items = Array.isArray(order.items) ? order.items : [];
+  const itemLines = items.length
+    ? items.map((it) => `${it.qty} x ${it.title || it.name} — ₦${Number(it.price || 0) * Number(it.qty || 1)}`).join('\n')
+    : `${order.item_title || 'Item'} x${order.qty || 1}`;
+
+  const header = forVendor ? `🧾 *Payment Receipt — New Paid Order*` : `🧾 *Payment Receipt*`;
+  const orderRef = order.id ? `Order: ${order.id}` : null;
+  const paidRef = order.payment_reference ? `Ref: ${order.payment_reference}` : null;
+
+  const lines = [
+    header,
+    orderRef,
+    paidRef,
+    `Date: ${formatReceiptDate(order.paid_at || new Date().toISOString())}`,
+    ``,
+    `Restaurant: ${order.restaurant_name || 'N/A'}`,
+    !forVendor ? `Delivery to: ${order.delivery_address || 'N/A'}` : `Customer: ${order.customer_name || 'N/A'}${order.customer_phone ? ` (${order.customer_phone})` : ''}`,
+    ``,
+    itemLines,
+    ``,
+    `Subtotal: ₦${Number(order.subtotal ?? order.total ?? 0)}`,
+    order.delivery_fee ? `Delivery fee: ₦${Number(order.delivery_fee)}` : null,
+    `*Total paid: ₦${Number(order.total ?? 0)}*`,
+    ``,
+    forVendor ? `Please prepare this order.` : `✅ Payment confirmed — thanks for ordering with Foodie!`
+  ];
+
+  return lines.filter(Boolean).join('\n');
+}
+
+// Sends the receipt to the customer and, separately, to the vendor (falling
+// back to ORDER_NOTIFY_NUMBER for the vendor copy if the vendor has no phone
+// on file — same fallback pattern used by sendOrderNotification above).
+async function sendPaymentReceipts(order) {
+  if (order.customer_phone) {
+    await sendWhatsAppMessage(order.customer_phone, { type: 'text', body: buildReceiptText(order, { forVendor: false }) });
+  }
+
+  let vendorPhone = null;
+  if (order.vendor_id) {
+    const { data: vendorRecord } = await supabase.from('vendors').select('phone').eq('id', order.vendor_id).maybeSingle();
+    vendorPhone = vendorRecord?.phone || null;
+  }
+  const vendorTarget = vendorPhone || ORDER_NOTIFY_NUMBER;
+  if (vendorTarget) {
+    await sendWhatsAppMessage(vendorTarget, { type: 'text', body: buildReceiptText(order, { forVendor: true }) });
+  } else {
+    console.warn(`No vendor phone or ORDER_NOTIFY_NUMBER configured; could not send vendor receipt for order ${order.id}.`);
   }
 }
 
