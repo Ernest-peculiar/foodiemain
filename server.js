@@ -680,11 +680,22 @@ async function handleDispatchPayload(payload, phone, session) {
           // Build caption with additional driver info
           const infoCaption = `${caption}\n\nRider: ${driver.name || 'Unknown'}${driver.vehicle_type ? `\nVehicle: ${driver.vehicle_type}` : ''}${driver.phone ? `\nPhone: ${driver.phone}` : ''}`;
           if (driver.photo_url) {
-            await sendWhatsAppMessage(vendorTarget, {
-              type: 'image',
-              imageUrl: driver.photo_url,
-              caption: infoCaption
-            });
+           // Send driver's photo
+await sendWhatsAppMessage(vendorTarget, {
+  type: 'image',
+  imageUrl: driver.photo_url
+});
+
+// Send driver's details
+await sendWhatsAppMessage(vendorTarget, {
+  type: 'text',
+  body: `🚴 ${driver.name} accepted your delivery.
+
+📞 Driver: ${driver.name}
+🏍️ Vehicle: ${driver.vehicle_type || "Bike"}
+
+The rider is on the way to pick up the order.`
+});
           } else {
             await sendWhatsAppMessage(vendorTarget, { type: 'text', body: infoCaption });
           }
