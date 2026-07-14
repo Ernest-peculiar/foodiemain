@@ -918,18 +918,49 @@ async function handleDriverRegistrationPhoto(message, phone, session) {
   }
 
   try {
-    const mediaUrl = `https://graph.facebook.com/${WHATSAPP_API_VERSION}/${message.image.id}`;
-    const mediaResponse = await fetch(mediaUrl, {
-      headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` }
-    });
-    const buffer = Buffer.from(await mediaResponse.arrayBuffer());
-    const photoUrl = await dispatch.uploadDriverPhoto(
-      supabase,
-      normalizePhone(phone),
-      buffer,
-      message.image.mime_type || 'image/jpeg',
-      `driver-${normalizePhone(phone)}-${Date.now()}.jpg`
-    );
+    // STEP 1: Get the media metadata
+const metadataResponse = await fetch(
+  `https://graph.facebook.com/${WHATSAPP_API_VERSION}/${message.image.id}`,
+  {
+    headers: {
+      Authorization: `Bearer ${WHATSAPP_TOKEN}`
+    }
+  }
+);
+
+if (!metadataResponse.ok) {
+  throw new Error(await metadataResponse.text());
+}
+
+const metadata = await metadataResponse.json();
+
+console.log("WhatsApp Media Metadata:", metadata);
+
+// STEP 2: Download the actual image
+const imageResponse = await fetch(metadata.url, {
+  headers: {
+    Authorization: `Bearer ${WHATSAPP_TOKEN}`
+  }
+});
+
+if (!imageResponse.ok) {
+  throw new Error(await imageResponse.text());
+}
+
+const buffer = Buffer.from(await imageResponse.arrayBuffer());
+
+console.log("Image Size:", buffer.length);
+
+// STEP 3: Upload to Supabase
+const photoUrl = await dispatch.uploadDriverPhoto(
+  supabase,
+  normalizePhone(phone),
+  buffer,
+  metadata.mime_type || message.image.mime_type || "image/jpeg",
+  `driver-${normalizePhone(phone)}-${Date.now()}.jpg`
+);
+
+console.log("Driver Photo URL:", photoUrl);
 
     return {
       replies: [
