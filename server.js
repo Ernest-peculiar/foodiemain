@@ -3,6 +3,7 @@ require('dotenv').config();
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
 const dispatch = require('./lib/order-dispatch');
 const app = express();
@@ -343,6 +344,80 @@ async function handleAvailabilityCommands(text, phone, session) {
   return null;
 }
 
+// --- Vendor menu management (edit menu / toggle item availability) --------
+// Two things a vendor can do post-registration:
+//   1. Reply "menu"       -> see current menu with an available/sold-out tag
+//                             on every item, tap one to flip it.
+//   2. Reply "edit menu"  -> re-send the whole menu as text, same format as
+//                             registration. Items that match an existing
+//                             item by title keep their id + available flag;
+//                             new lines are added as available by default.
+// Requires a `menu_items jsonb` column on `vendors` (see parseVendorMenu /
+// dispatch.updateVendorMenuItems / dispatch.upsertVendor below for what it
+// stores: an array of { id, title, name, description, price, available }).
+function makeItemId() {
+  return crypto.randomBytes(3).toString('hex'); // short, stable per item, e.g. "a1b2c3"
+}
+
+function getVendorMenuManagementListReply(items, bodyText) {
+  return {
+    type: 'interactive',
+    interactive: {
+      type: 'list',
+      body: { text: bodyText || 'Tap an item to toggle it available / sold out.' },
+      action: {
+        button: 'Manage',
+        sections: [
+          {
+            rows: items.map((item) => ({
+              id: `toggle_item_${item.id}`,
+              title: `${item.available !== false ? '✅' : '🚫'} ${item.title || item.name}`.slice(0, 24),
+              description: (item.price ? `₦${item.price}` : 'No price set').slice(0, 72)
+            }))
+          }
+        ]
+      }
+    }
+  };
+}
+
+async function handleVendorMenuCommands(text, phone, session) {
+  const normalized = (text || '').trim().toLowerCase();
+  if (normalized !== 'menu' && normalized !== 'edit menu') return null;
+
+  const vendor = await getVendorRecordByPhone(phone);
+  if (!vendor) return null; // not a registered vendor — let normal routing handle it
+
+  if (normalized === 'edit menu') {
+    return {
+      replies: {
+        type: 'text',
+        body: `Send your full updated menu as text — one item per line with prices. Example:\nRice & Beans - 1500\nEgusi Soup - 1800\nChicken Sandwich - 1200\n\nItems you keep (matched by name) will keep their current available/sold-out status; new lines are added as available; lines you drop are removed.`
+      },
+      nextStage: STAGES.VENDOR_AWAIT_MENU,
+      sessionData: { ...session, registrationRole: 'vendor', vendorName: vendor.name, isMenuEdit: true }
+    };
+  }
+
+  const items = vendor.menu_items || parseVendorMenu(vendor.menu);
+  if (!items || items.length === 0) {
+    return {
+      replies: { type: 'text', body: `You don't have a menu on file yet. Reply "edit menu" to add one.` },
+      nextStage: null,
+      sessionData: session
+    };
+  }
+
+  return {
+    replies: [
+      { type: 'text', body: `Here's your current menu, ${vendor.name}:` },
+      getVendorMenuManagementListReply(items, 'Tap an item to mark it available or sold out. Reply "edit menu" to rewrite the whole list.')
+    ],
+    nextStage: null,
+    sessionData: session
+  };
+}
+
 async function handleRegistrationFlow(text, phone, session) {
   let normalized = (text || '').trim().toLowerCase();
   if (normalized === 'register_vendor') normalized = 'register vendor';
@@ -356,7 +431,7 @@ async function handleRegistrationFlow(text, phone, session) {
     const vendorRecord = await getVendorRecordByPhone(phone);
     if (vendorRecord) {
       return {
-        replies: { type: 'text', body: `You are already registered as a vendor. Reply with open/close for availability.` },
+        replies: { type: 'text', body: `You are already registered as a vendor. Reply with open/close for availability, or "menu" to manage your menu.` },
         nextStage: null,
         sessionData: session
       };
@@ -441,20 +516,32 @@ async function finalizeRegistration(text, phone, session) {
       };
     }
 
+    // If this is an edit (triggered via "edit menu") rather than fresh
+    // registration, merge against the vendor's existing structured menu so
+    // items that are still present keep their id + available/sold-out
+    // status instead of resetting to available on every re-send.
+    let existingItems = [];
+    if (session.isMenuEdit) {
+      const existingVendor = await getVendorRecordByPhone(phone);
+      existingItems = existingVendor?.menu_items || [];
+    }
+    const menuItems = parseVendorMenu(menuText, existingItems);
+
     const vendor = await dispatch.upsertVendor(supabase, {
       phone: normalizePhone(phone),
       name: vendorName,
       menu: menuText,
+      menuItems,
       isActive: true,
       isOpen: true
     });
     return {
       replies: {
         type: 'text',
-        body: `✅ Registered ${vendorName} as a vendor. Reply open/close to toggle availability.`
+        body: `✅ ${session.isMenuEdit ? 'Updated menu for' : 'Registered'} ${vendorName}${session.isMenuEdit ? '' : ' as a vendor'}. Reply "menu" any time to mark items sold out, or "edit menu" to rewrite it.`
       },
       nextStage: null,
-      sessionData: { ...session, registrationRole: null, vendorName: null }
+      sessionData: { ...session, registrationRole: null, vendorName: null, isMenuEdit: false }
     };
   }
 
@@ -476,6 +563,55 @@ async function finalizeRegistration(text, phone, session) {
 
 async function handleDispatchPayload(payload, phone, session) {
   const normalized = (payload || '').trim();
+
+  // --- Vendor: toggle a single menu item available / sold out ---------------
+  // Tapped from the list shown by handleVendorMenuCommands ("menu" command).
+  // Item ids are 6 hex chars, generated by makeItemId() and persisted on
+  // vendors.menu_items — see the vendor menu management section above.
+  const toggleItemMatch = normalized.match(/^toggle_item_([a-f0-9]{6})$/i);
+  if (toggleItemMatch) {
+    const [, itemId] = toggleItemMatch;
+    const vendor = await getVendorRecordByPhone(phone);
+    if (!vendor) {
+      return {
+        replies: { type: 'text', body: 'Only a registered vendor can update a menu.' },
+        nextStage: null,
+        sessionData: session
+      };
+    }
+
+    const items = vendor.menu_items || parseVendorMenu(vendor.menu);
+    const item = items.find((it) => it.id === itemId);
+    if (!item) {
+      return {
+        replies: { type: 'text', body: 'Could not find that menu item — it may have been removed in a later edit.' },
+        nextStage: null,
+        sessionData: session
+      };
+    }
+
+    item.available = item.available === false ? true : false;
+
+    try {
+      await dispatch.updateVendorMenuItems(supabase, vendor.id, items);
+    } catch (error) {
+      console.error('Failed to toggle menu item availability:', error.message || error);
+      return {
+        replies: { type: 'text', body: 'Something went wrong updating that item — please try again.' },
+        nextStage: null,
+        sessionData: session
+      };
+    }
+
+    return {
+      replies: [
+        { type: 'text', body: `${item.available ? '✅ Marked available' : '🚫 Marked sold out'}: *${item.title || item.name}*` },
+        getVendorMenuManagementListReply(items)
+      ],
+      nextStage: null,
+      sessionData: session
+    };
+  }
 
   // --- Vendor: step 1 of accepting a new order ------------------------------
   // Tapping "✅ Accept" on the initial order card does NOT finalize the order
@@ -1359,10 +1495,19 @@ async function handleIncomingMessage(message, value) {
   // swallowed as free text and used AS the restaurant name, corrupting the
   // vendor record ("✅ Registered register_driver as a vendor.").
   const registrationReply = await handleRegistrationFlow(text, from, session);
+  // "menu" / "edit menu" are likewise explicit vendor commands and must be
+  // recognized regardless of any in-progress stage, same rationale as
+  // registration above. Checked right after registration, before stage
+  // routing, so a vendor mid-flow can still jump straight to managing their
+  // menu.
+  const menuManagementReply = registrationReply ? null : await handleVendorMenuCommands(text, from, session);
 
   if (registrationReply) {
     await logMessage(from, 'inbound', message.type || 'text', text, message);
     result = registrationReply;
+  } else if (menuManagementReply) {
+    await logMessage(from, 'inbound', message.type || 'text', text, message);
+    result = menuManagementReply;
   } else if (session.stage === 'vendorAwaitName' || session.stage === STAGES.VENDOR_AWAIT_MENU || session.stage === 'driverAwaitName') {
     result = await finalizeRegistration(text, from, session);
   } else if (session.stage === STAGES.DRIVER_REG_AWAIT_PHOTO) {
@@ -1394,7 +1539,7 @@ async function handleIncomingMessage(message, value) {
       result = availabilityReply;
     } else if (role === 'vendor') {
       const dispatchReply = await handleDispatchPayload(text, from, session);
-      result = dispatchReply || { replies: { type: 'text', body: 'Reply open/close to change availability.' }, nextStage: null, sessionData: session };
+      result = dispatchReply || { replies: { type: 'text', body: 'Reply open/close to change availability, or "menu" to manage your menu.' }, nextStage: null, sessionData: session };
     } else if (role === 'driver') {
       const dispatchReply = await handleDispatchPayload(text, from, session);
       result = dispatchReply || { replies: { type: 'text', body: 'Reply online/offline to toggle availability.' }, nextStage: null, sessionData: session };
@@ -1687,14 +1832,28 @@ function handleRecommendMeals() {
 
 // Given a vendor row from Supabase, build the "here's the menu" reply and
 // move the session into ORDER_SELECT_COMBO with that vendor + parsed menu
-// cached on the session.
+// cached on the session. Only items currently marked available are shown
+// to customers — sold-out items are filtered out here so they can never be
+// selected further down the ordering flow.
 function buildVendorMenuReply(vendorRecord, introText) {
-  const menuItems = parseVendorMenu(vendorRecord.menu);
+  const allItems = vendorRecord.menu_items || parseVendorMenu(vendorRecord.menu);
+  const menuItems = allItems.filter((it) => it.available !== false);
   const vendor = {
     name: vendorRecord.name,
     phone: vendorRecord.phone,
     vicinity: vendorRecord.vicinity || 'Registered restaurant'
   };
+
+  if (menuItems.length === 0) {
+    return {
+      replies: {
+        type: 'text',
+        body: `Sorry, *${vendor.name}* has nothing available right now — please check back later.`
+      },
+      nextStage: null,
+      sessionData: {}
+    };
+  }
 
   return {
     replies: [
@@ -1968,7 +2127,22 @@ async function handleOrderSelectCombo(text, name, session) {
   };
 }
 
-function parseVendorMenu(menuText) {
+// Parses raw vendor-entered menu text into structured items, one per line
+// (or comma-separated on a single line). Each item gets:
+//   - title/name: the display text
+//   - price: parsed from a trailing "- 1500" / ": 1500" style suffix, or
+//     null if no price was given
+//   - id: a short stable identifier used to reference this exact item later
+//     (e.g. toggling availability) — see makeItemId() above
+//   - available: true by default
+//
+// `existingItems` (optional) is the vendor's current structured menu
+// (vendors.menu_items). When provided, any parsed line whose title matches
+// an existing item (case-insensitive) reuses that item's id and available
+// flag instead of resetting it — this is what lets "edit menu" preserve
+// sold-out status for items that didn't change, while still letting a
+// vendor add/remove lines freely.
+function parseVendorMenu(menuText, existingItems = []) {
   if (!menuText) return [];
   // Split into lines first; if single line with commas, split by commas.
   const lines = menuText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
@@ -1979,13 +2153,25 @@ function parseVendorMenu(menuText) {
     for (const l of lines) items.push(l);
   }
 
+  const existingByTitle = new Map(
+    (existingItems || []).map((it) => [(it.title || it.name || '').trim().toLowerCase(), it])
+  );
+
   // Parse each item for an optional price like "name - 1500" or "name:1500"
   return items.map((line) => {
     const match = line.match(/^(.*?)\s*[-–—:]\s*(\d+(?:\.\d+)?)$/);
-    if (match) {
-      return { title: match[1].trim(), description: '', price: Math.round(Number(match[2])), name: match[1].trim() };
-    }
-    return { title: line, description: '', price: null, name: line };
+    const title = (match ? match[1] : line).trim();
+    const price = match ? Math.round(Number(match[2])) : null;
+    const existing = existingByTitle.get(title.toLowerCase());
+
+    return {
+      id: existing?.id || makeItemId(),
+      title,
+      name: title,
+      description: '',
+      price,
+      available: existing ? existing.available !== false : true
+    };
   });
 }
 
