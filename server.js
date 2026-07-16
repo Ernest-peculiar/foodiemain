@@ -831,22 +831,17 @@ async function handleDispatchPayload(payload, phone, session) {
           // Build caption with additional driver info
           const infoCaption = `${caption}\n\nRider: ${driver.name || 'Unknown'}${driver.vehicle_type ? `\nVehicle: ${driver.vehicle_type}` : ''}${driver.phone ? `\nPhone: ${driver.phone}` : ''}`;
           if (driver.photo_url) {
-           // Send driver's photo
-await sendWhatsAppMessage(vendorTarget, {
-  type: 'image',
-  imageUrl: driver.photo_url
-});
+            // Send driver's photo
+            await sendWhatsAppMessage(vendorTarget, {
+              type: 'image',
+              imageUrl: driver.photo_url
+            });
 
-// Send driver's details
-await sendWhatsAppMessage(vendorTarget, {
-  type: 'text',
-  body: `🚴 ${driver.name} accepted your delivery.
-
-📞 Driver: ${driver.name}
-🏍️ Vehicle: ${driver.vehicle_type || "Bike"}
-
-The rider is on the way to pick up the order.`
-});
+            // Send driver's details
+            await sendWhatsAppMessage(vendorTarget, {
+              type: 'text',
+              body: `🚴 ${driver.name} accepted your delivery.\n\n📞 Driver: ${driver.name}\n🏍️ Vehicle: ${driver.vehicle_type || "Bike"}\n\nThe rider is on the way to pick up the order.`
+            });
           } else {
             await sendWhatsAppMessage(vendorTarget, { type: 'text', body: infoCaption });
           }
@@ -1081,48 +1076,48 @@ async function handleDriverRegistrationPhoto(message, phone, session) {
 
   try {
     // STEP 1: Get the media metadata
-const metadataResponse = await fetch(
-  `https://graph.facebook.com/${WHATSAPP_API_VERSION}/${message.image.id}`,
-  {
-    headers: {
-      Authorization: `Bearer ${WHATSAPP_TOKEN}`
+    const metadataResponse = await fetch(
+      `https://graph.facebook.com/${WHATSAPP_API_VERSION}/${message.image.id}`,
+      {
+        headers: {
+          Authorization: `Bearer ${WHATSAPP_TOKEN}`
+        }
+      }
+    );
+
+    if (!metadataResponse.ok) {
+      throw new Error(await metadataResponse.text());
     }
-  }
-);
 
-if (!metadataResponse.ok) {
-  throw new Error(await metadataResponse.text());
-}
+    const metadata = await metadataResponse.json();
 
-const metadata = await metadataResponse.json();
+    console.log("WhatsApp Media Metadata:", metadata);
 
-console.log("WhatsApp Media Metadata:", metadata);
+    // STEP 2: Download the actual image
+    const imageResponse = await fetch(metadata.url, {
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_TOKEN}`
+      }
+    });
 
-// STEP 2: Download the actual image
-const imageResponse = await fetch(metadata.url, {
-  headers: {
-    Authorization: `Bearer ${WHATSAPP_TOKEN}`
-  }
-});
+    if (!imageResponse.ok) {
+      throw new Error(await imageResponse.text());
+    }
 
-if (!imageResponse.ok) {
-  throw new Error(await imageResponse.text());
-}
+    const buffer = Buffer.from(await imageResponse.arrayBuffer());
 
-const buffer = Buffer.from(await imageResponse.arrayBuffer());
+    console.log("Image Size:", buffer.length);
 
-console.log("Image Size:", buffer.length);
+    // STEP 3: Upload to Supabase
+    const photoUrl = await dispatch.uploadDriverPhoto(
+      supabase,
+      normalizePhone(phone),
+      buffer,
+      metadata.mime_type || message.image.mime_type || "image/jpeg",
+      `driver-${normalizePhone(phone)}-${Date.now()}.jpg`
+    );
 
-// STEP 3: Upload to Supabase
-const photoUrl = await dispatch.uploadDriverPhoto(
-  supabase,
-  normalizePhone(phone),
-  buffer,
-  metadata.mime_type || message.image.mime_type || "image/jpeg",
-  `driver-${normalizePhone(phone)}-${Date.now()}.jpg`
-);
-
-console.log("Driver Photo URL:", photoUrl);
+    console.log("Driver Photo URL:", photoUrl);
 
     return {
       replies: [
@@ -2380,8 +2375,19 @@ function getRoundedAmount(amount) {
 // Now accepts a `reference` — this is the order's own id, passed straight
 // through to Paystack so the /webhook/paystack handler can match the
 // eventual charge.success event back to a specific order row.
+//
+// FIX: previously any non-2xx response from Paystack was swallowed —
+// `if (!response.ok) return null;` discarded the response body entirely,
+// so a bad secret key, an invalid email, a malformed amount, or a rejected
+// callback_url all looked identical to the customer ("I couldn't create
+// the payment link right now") with NOTHING useful in the server logs.
+// Now the response body is read and logged before returning null, so the
+// real reason shows up in your console.
 async function createPaystackTransaction(email, amount, reference) {
-  if (!PAYSTACK_SECRET_KEY) return null;
+  if (!PAYSTACK_SECRET_KEY) {
+    console.warn('PAYSTACK_SECRET_KEY is not configured — cannot create a payment link.');
+    return null;
+  }
 
   try {
     const response = await fetch('https://api.paystack.co/transaction/initialize', {
@@ -2399,13 +2405,26 @@ async function createPaystackTransaction(email, amount, reference) {
       })
     });
 
-    if (!response.ok) return null;
-    const data = await response.json();
+    const data = await response.json().catch(() => null);
 
-    if (data.status && data.data) return data.data;
+    if (!response.ok) {
+      // This is the key fix: log Paystack's actual error message/status
+      // instead of discarding it. Common causes: invalid secret key,
+      // invalid email, callback_url not a valid public HTTPS URL (see the
+      // PUBLIC_URL warning at startup), or amount below Paystack's minimum.
+      console.error(
+        `Paystack initialize failed (status ${response.status}):`,
+        data?.message || JSON.stringify(data)
+      );
+      return null;
+    }
+
+    if (data?.status && data?.data) return data.data;
+
+    console.error('Paystack initialize returned 2xx but an unexpected body:', JSON.stringify(data));
     return null;
   } catch (error) {
-    console.error('Paystack initialize failed:', error);
+    console.error('Paystack initialize failed (network/exception):', error);
     return null;
   }
 }
@@ -2531,6 +2550,7 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
   });
 
   if (!orderRecord?.id) {
+    console.error('createOrderRecord did not return an order id — order was not created. Check lib/order-dispatch.js and the orders table schema.');
     return {
       replies: { type: 'text', body: `Something went wrong starting your order — please try again.` },
       nextStage: null
