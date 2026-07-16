@@ -1528,6 +1528,49 @@ app.post('/webhook/paystack', async (req, res) => {
   }
 });
 
+// --- Paystack browser redirect (callback_url) -------------------------------
+// This is DIFFERENT from the /webhook/paystack route above. That one is
+// server-to-server, signature-verified, and is the single source of truth
+// for order state — it's what actually marks an order paid, sends the
+// customer's receipt, and pings the vendor with Accept/Decline buttons.
+//
+// This route is just where the CUSTOMER'S BROWSER lands after they finish
+// (or abandon) checkout on Paystack's hosted payment page — see
+// `callback_url` in createPaystackTransaction() above. Without this route,
+// Express has nothing registered at GET /paystack/callback, so the customer
+// was hitting a raw "Cannot GET /paystack/callback" error page after paying
+// — payment and order processing still worked (that's all driven by the
+// webhook), but it looked broken from the customer's side.
+//
+// Deliberately does NOT touch order state or send any WhatsApp messages —
+// that stays the webhook's job only, so we never risk a double receipt or a
+// double vendor notification racing the webhook for the same order. This
+// route just re-verifies the transaction (read-only) so it can show the
+// customer an accurate confirmation page.
+app.get('/paystack/callback', async (req, res) => {
+  const { reference } = req.query;
+
+  if (!reference || !PAYSTACK_SECRET_KEY) {
+    return res.status(400).send('<h2>Missing payment reference.</h2><p>Please return to WhatsApp.</p>');
+  }
+
+  try {
+    const response = await fetch(`https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`, {
+      headers: { Authorization: `Bearer ${PAYSTACK_SECRET_KEY}` }
+    });
+    const result = await response.json().catch(() => null);
+
+    if (result?.status && result?.data?.status === 'success') {
+      return res.send('<h2>✅ Payment successful</h2><p>You can close this tab and return to WhatsApp — your receipt is on its way.</p>');
+    }
+
+    return res.send('<h2>⚠️ Payment not confirmed</h2><p>If you completed payment, please return to WhatsApp and wait a moment for your receipt. Contact support if it does not arrive.</p>');
+  } catch (error) {
+    console.error('Paystack callback verification failed:', error.message || error);
+    return res.status(500).send('<h2>Something went wrong.</h2><p>Please return to WhatsApp — if payment succeeded, your receipt will still arrive there.</p>');
+  }
+});
+
 // Builds the receipt text sent to both the customer and the vendor once
 // payment is confirmed.
 function buildReceiptText({ orderId, vendorName, itemTitle, qty, unitPrice, total, address, reference, paidAt }) {
@@ -2902,7 +2945,7 @@ function getDriverAcceptButtonsReply(orderId) {
   };
 }
 
-// NEW — shown to the driver right after they accept a delivery, so they have
+// Shown to the driver right after they accept a delivery, so they have
 // an obvious next tap once they've physically picked up the order from the
 // restaurant. Produces the `driver_pickup_<orderId>` payload already handled
 // by the `pickupMatch` branch in handleDispatchPayload.
@@ -2921,7 +2964,7 @@ function getDriverPickedUpButtonsReply(orderId, bodyText = 'Let us know when you
   };
 }
 
-// NEW — shown to the customer once the driver marks the order delivered, so
+// Shown to the customer once the driver marks the order delivered, so
 // they can confirm receipt (or flag a problem) with a tap instead of typing.
 function getCustomerConfirmDeliveryButtonsReply(orderId, bodyText = 'Has your order arrived?') {
   return {
