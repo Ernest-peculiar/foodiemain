@@ -15,7 +15,7 @@ if (!/^https:\/\//i.test(PUBLIC_URL) || /localhost|127\.0\.0\.1/i.test(PUBLIC_UR
     `⚠️  PUBLIC_URL is "${PUBLIC_URL}" — this is the URL WhatsApp's servers use to fetch images you send, `
     + `and they can't reach localhost or a plain http:// address. Local images will silently fail to display `
     + `until PUBLIC_URL is set (in your .env) to a real public HTTPS URL — your deployed domain, or an https `
-    + `tunnel like ngrok during local dev.`
+    + `tunnel like ngrok during local dev. It is also the base for the Paystack webhook callback_url.`
   );
 }
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
@@ -29,7 +29,7 @@ const DEBUG = process.env.DEBUG === 'true';
 // comes in. NOTE: WhatsApp's Business API only allows free-form messages to a
 // number that has messaged the bot within the last 24h, or via an approved
 // template. In practice this should be a staff/admin line that has an open
-// session with the bot (or a template message — see sendOrderNotification()).
+// session with the bot (or a template message — see handlePaystackChargeSuccess()).
 const ORDER_NOTIFY_NUMBER = process.env.ORDER_NOTIFY_NUMBER;
 
 // Supabase persistence: conversation stage/session state + a full inbound/
@@ -212,6 +212,21 @@ async function getVendorRecordByPhone(phone) {
 
   if (error) {
     console.error('Vendor lookup failed:', error.message);
+    return null;
+  }
+  return data;
+}
+
+async function getVendorRecordById(vendorId) {
+  if (!supabase || !vendorId) return null;
+  const { data, error } = await supabase
+    .from('vendors')
+    .select('*')
+    .eq('id', vendorId)
+    .maybeSingle();
+
+  if (error) {
+    console.error('Vendor lookup by id failed:', error.message);
     return null;
   }
   return data;
@@ -1412,7 +1427,14 @@ async function logMessage(phone, direction, messageType, body, payload) {
   if (error) console.error('Supabase logMessage failed:', error.message);
 }
 
-app.use(express.json());
+// IMPORTANT: `verify` captures the raw request body BEFORE JSON parsing and
+// stashes it on req.rawBody. This is required to validate Paystack's webhook
+// signature (see /webhook/paystack below) — Paystack signs the exact raw
+// bytes it sent, and re-serializing req.body would not reliably reproduce
+// the same bytes (key order, whitespace, etc. can all differ).
+app.use(express.json({
+  verify: (req, res, buf) => { req.rawBody = buf; }
+}));
 app.use('/images', express.static(path.join(__dirname, 'public/images')));
 
 app.get('/', (req, res) => {
@@ -1466,6 +1488,156 @@ app.post('/webhook', async (req, res) => {
 
   res.sendStatus(200);
 });
+
+// --- Paystack webhook -------------------------------------------------------
+// This is the ONLY place a customer receives a payment receipt and a vendor
+// is notified of a new paid order. `handleOrderAwaitAddress` below only ever
+// creates an `unpaid` order and hands the customer a payment link — nothing
+// downstream (receipt, vendor accept/decline card) fires until Paystack
+// confirms the charge here.
+//
+// Set this URL in your Paystack dashboard (Settings -> API Keys & Webhooks):
+//   https://<your-public-domain>/webhook/paystack
+// (Note: this is different from `callback_url`, which only controls where
+// the customer's browser redirects after paying — it is not reliable for
+// server-side confirmation since the customer may close the tab.)
+app.post('/webhook/paystack', async (req, res) => {
+  const signature = req.headers['x-paystack-signature'];
+
+  if (!PAYSTACK_SECRET_KEY || !signature || !req.rawBody) {
+    return res.sendStatus(400);
+  }
+
+  const expectedHash = crypto
+    .createHmac('sha512', PAYSTACK_SECRET_KEY)
+    .update(req.rawBody)
+    .digest('hex');
+
+  if (expectedHash !== signature) {
+    console.warn('Paystack webhook signature mismatch — ignoring request.');
+    return res.sendStatus(401);
+  }
+
+  // Ack immediately — Paystack expects a fast 200 and will retry on timeout,
+  // so we don't want slow downstream work (WhatsApp sends, DB writes) to
+  // hold up the response.
+  res.sendStatus(200);
+
+  const event = req.body;
+  if (event?.event === 'charge.success') {
+    try {
+      await handlePaystackChargeSuccess(event.data);
+    } catch (error) {
+      console.error('Failed to process Paystack charge.success webhook:', error);
+    }
+  }
+});
+
+// Builds the receipt text sent to both the customer and the vendor once
+// payment is confirmed.
+function buildReceiptText({ orderId, vendorName, itemTitle, qty, unitPrice, total, address, reference, paidAt }) {
+  const date = new Date(paidAt || Date.now()).toLocaleString('en-NG', { dateStyle: 'medium', timeStyle: 'short' });
+  return `🧾 *Receipt* — Order ${orderId}\n\n`
+    + `${qty} x ${itemTitle} — ₦${unitPrice.toLocaleString('en-US')} each\n`
+    + `*Total paid: ₦${total.toLocaleString('en-US')}*\n\n`
+    + `Restaurant: ${vendorName}\n`
+    + `Deliver to: ${address}\n`
+    + `Paid: ${date}\n`
+    + `Ref: ${reference}\n\n`
+    + `Thanks for ordering with Foodie! 🙏`;
+}
+
+// Fires once Paystack confirms a successful charge for a given reference.
+// This is the payment gate: the customer gets their receipt here, and the
+// vendor is notified (receipt + Accept/Decline/Unavailable buttons) here —
+// neither happens any earlier in the flow.
+async function handlePaystackChargeSuccess(data) {
+  const reference = data?.reference;
+  if (!reference || !supabase) return;
+
+  const { data: orderRow, error } = await supabase
+    .from('orders')
+    .select('*')
+    .eq('paystack_reference', reference)
+    .maybeSingle();
+
+  if (error) {
+    console.error('Failed to look up order for Paystack reference', reference, error.message);
+    return;
+  }
+  if (!orderRow) {
+    console.warn(`No order found for Paystack reference ${reference} — ignoring webhook.`);
+    return;
+  }
+
+  // Idempotency — Paystack retries webhook delivery on any non-2xx or
+  // timeout, so make sure a retry never sends a second receipt/notification.
+  if (orderRow.payment_status === 'paid') return;
+
+  const paidAt = new Date().toISOString();
+  const { error: updateError } = await supabase
+    .from('orders')
+    .update({ payment_status: 'paid', paid_at: paidAt, status: 'pending_vendor' })
+    .eq('id', orderRow.id);
+
+  if (updateError) {
+    console.error('Failed to mark order paid:', updateError.message);
+    return;
+  }
+
+  const items = Array.isArray(orderRow.items) ? orderRow.items : [];
+  const firstItem = items[0] || {};
+  const itemTitle = firstItem.title || 'your order';
+  const qty = firstItem.qty || 1;
+  const unitPrice = firstItem.price || 0;
+  const total = Number(orderRow.total) || (unitPrice * qty);
+
+  const receiptText = buildReceiptText({
+    orderId: orderRow.id,
+    vendorName: orderRow.restaurant_name,
+    itemTitle,
+    qty,
+    unitPrice,
+    total,
+    address: orderRow.delivery_address,
+    reference,
+    paidAt
+  });
+
+  // Receipt to the customer — first confirmation they get that money has
+  // actually moved, as opposed to just having been shown a payment link.
+  if (orderRow.customer_phone) {
+    await sendWhatsAppMessage(orderRow.customer_phone, { type: 'text', body: receiptText });
+    await saveProfile(orderRow.customer_phone, {
+      lastOrder: {
+        vendorName: orderRow.restaurant_name,
+        comboTitle: itemTitle,
+        qty,
+        total,
+        address: orderRow.delivery_address,
+        at: paidAt
+      }
+    });
+  }
+
+  // Receipt + Accept/Decline/Unavailable card to the vendor — this is the
+  // FIRST time the vendor hears about this order at all. Vendor phone is
+  // resolved from vendor_id (the FK on orders) rather than trusting a flat
+  // column that may not exist on your `orders` table.
+  let vendorPhone = null;
+  if (orderRow.vendor_id) {
+    const vendorRecord = await getVendorRecordById(orderRow.vendor_id);
+    vendorPhone = vendorRecord?.phone || null;
+  }
+  const vendorTarget = vendorPhone || ORDER_NOTIFY_NUMBER;
+
+  if (vendorTarget) {
+    await sendWhatsAppMessage(vendorTarget, { type: 'text', body: receiptText });
+    await sendWhatsAppMessage(vendorTarget, getVendorOrderActionButtonsReply(orderRow.id));
+  } else {
+    console.warn('No vendor phone or ORDER_NOTIFY_NUMBER configured; cannot notify vendor of paid order.');
+  }
+}
 
 async function handleIncomingMessage(message, value) {
   const from = message.from;
@@ -1839,6 +2011,7 @@ function buildVendorMenuReply(vendorRecord, introText) {
   const allItems = vendorRecord.menu_items || parseVendorMenu(vendorRecord.menu);
   const menuItems = allItems.filter((it) => it.available !== false);
   const vendor = {
+    id: vendorRecord.id,
     name: vendorRecord.name,
     phone: vendorRecord.phone,
     vicinity: vendorRecord.vicinity || 'Registered restaurant'
@@ -2204,7 +2377,10 @@ function getRoundedAmount(amount) {
   return Math.round(amount * 100);
 }
 
-async function createPaystackTransaction(email, amount) {
+// Now accepts a `reference` — this is the order's own id, passed straight
+// through to Paystack so the /webhook/paystack handler can match the
+// eventual charge.success event back to a specific order row.
+async function createPaystackTransaction(email, amount, reference) {
   if (!PAYSTACK_SECRET_KEY) return null;
 
   try {
@@ -2218,6 +2394,7 @@ async function createPaystackTransaction(email, amount) {
         email,
         amount: getRoundedAmount(amount),
         currency: 'NGN',
+        reference,
         callback_url: `${PUBLIC_URL}/paystack/callback`
       })
     });
@@ -2280,10 +2457,13 @@ function isLikelyValidAddress(text) {
   return true;
 }
 
-// Step: exact delivery address given. Only now do we talk to Paystack and
-// notify staff — this is the payment gate the user asked for. We also save a
-// `lastOrder` snapshot to the user's persistent profile so a future greeting
-// can offer a one-tap reorder.
+// Step: exact delivery address given. This creates an UNPAID order and hands
+// the customer a payment link — nothing else happens yet. The vendor is NOT
+// notified here, and the customer does NOT get a receipt here. Both of those
+// only fire from handlePaystackChargeSuccess() once Paystack confirms the
+// charge via /webhook/paystack. If the item has no price set, we skip
+// payment entirely and also skip notifying the vendor, per policy — the
+// customer is just told to try again once pricing is fixed.
 async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
   const menuItems = Array.isArray(session.menuItems) ? session.menuItems : [];
   const combo = menuItems[session.selectedComboIdx];
@@ -2314,28 +2494,28 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
   const address = text.trim();
   const email = parseEmail(text) || `${name.replace(/\s+/g, '.').toLowerCase()}@example.com`;
   const unitPrice = (combo && (combo.price || combo.price === 0)) ? Number(combo.price) : 0;
-  let payment = null;
   const totalAmount = unitPrice * qty;
 
-  let paymentMessage = '';
+  // No price set — can't charge, so no payment, no receipt, and (per
+  // policy) no vendor notification of any kind. Just tell the customer.
   if (unitPrice <= 0) {
-    paymentMessage = `This restaurant has not set prices for that item. Please contact the restaurant to confirm the price before paying.`;
-
-    // Notify vendor/admin that a customer attempted checkout but no price is set
-    const vendorTarget = (vendor && vendor.phone) ? vendor.phone : ORDER_NOTIFY_NUMBER;
-    const notifyBody = `⚠️ Customer ${name} attempted to order ${qty} x ${combo.title || combo.name} but no price is set for this item. Please update your menu to include prices so customers can pay.`;
-    if (vendorTarget) await sendWhatsAppMessage(vendorTarget, { type: 'text', body: notifyBody });
-  } else {
-    payment = await createPaystackTransaction(email, unitPrice * qty);
-    paymentMessage = payment
-      ? `Please complete payment here: ${payment.authorization_url}`
-      : `I couldn't create the payment link right now. Please try again later or contact support.`;
+    return {
+      replies: {
+        type: 'text',
+        body: `This restaurant hasn't set a price for *${combo.title || combo.name}* yet, so I can't take payment right now. Please try again shortly, or pick a different item.`
+      },
+      nextStage: null
+    };
   }
 
+  // Create the order in an unpaid state first so we have an id to use as
+  // the Paystack reference — that's what lets the webhook match a
+  // confirmed payment back to this exact order.
   const orderRecord = await dispatch.createOrderRecord(supabase, {
     customerName: name,
     customerPhone: phone,
     vendor: {
+      id: vendor.id || null,
       name: vendor.name,
       phone: vendor.phone || null,
       isActive: true,
@@ -2347,87 +2527,42 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
     deliveryFee: 0,
     total: totalAmount,
     deliveryAddress: address,
-    status: 'pending_vendor'
+    status: 'pending_payment'
   });
 
-  await sendOrderNotification({
-    customerName: name,
-    item: combo,
-    qty,
-    vendor,
-    address,
-    paymentUrl: payment?.authorization_url,
-    orderId: orderRecord?.id
-  });
+  if (!orderRecord?.id) {
+    return {
+      replies: { type: 'text', body: `Something went wrong starting your order — please try again.` },
+      nextStage: null
+    };
+  }
 
-  // Remember this order (vendor, combo, qty, address, email) so a future
-  // conversation can reference it — e.g. the "order that again" prompt in
-  // handleGreeting, or reusing the address/email on the next checkout.
-  await saveProfile(phone, {
-    lastOrder: {
-      vendorName: vendor.name,
-      vendorVicinity: vendor.vicinity,
-      comboIdx: session.selectedComboIdx,
-      comboTitle: combo.title || combo.name,
-      qty,
-      total: (combo.price || 0) * qty,
-      address,
-      email,
-      at: new Date().toISOString()
-    }
-  });
+  const payment = await createPaystackTransaction(email, totalAmount, orderRecord.id);
+
+  let paymentMessage;
+  if (payment) {
+    // Store the reference Paystack actually assigned (falls back to the
+    // order id if Paystack didn't echo one back, since we sent it as the
+    // reference in the first place).
+    await dispatch.updateOrderStatus(supabase, orderRecord.id, {
+      paystack_reference: payment.reference || orderRecord.id
+    });
+    paymentMessage = `Please complete payment here: ${payment.authorization_url}\n\nYou'll get a receipt here the moment payment is confirmed — that's also when the restaurant is notified of your order.`;
+  } else {
+    paymentMessage = `I couldn't create the payment link right now. Please try again later or contact support.`;
+  }
+
+  // NOTE: no sendOrderNotification / vendor ping and no saveProfile(lastOrder)
+  // here anymore — both now happen only inside handlePaystackChargeSuccess(),
+  // once Paystack actually confirms the charge.
 
   return {
-    replies: [
-      {
-        type: 'text',
-        body: `✅ Almost done, ${shortName}!\n${qty} x *${combo.title || combo.name}* from *${vendor.name}*\nDeliver to: ${address}\nTotal: ₦${totalAmount}\n${paymentMessage}`
-      },
-      getPostVendorButtonsReply()
-    ],
+    replies: {
+      type: 'text',
+      body: `${qty} x *${combo.title || combo.name}* from *${vendor.name}*\nDeliver to: ${address}\nTotal: ₦${totalAmount}\n${paymentMessage}`
+    },
     nextStage: null
   };
-}
-
-// Sends a plain WhatsApp text to a staff/admin number so a human can relay the
-// order to the vendor, plus the Accept/Decline/Unavailable buttons for the
-// vendor's own phone. See the ORDER_NOTIFY_NUMBER note near the top of this
-// file — WhatsApp won't let us free-form message the restaurant itself unless
-// it has an open session with this bot or we use an approved template.
-async function sendOrderNotification({ customerName, item, qty, vendor, address, paymentUrl, orderId }) {
-  const body = `🆕 New order from ${customerName}:\n${qty} x ${item.title || item.name}\nRestaurant: ${vendor.name} (${vendor.vicinity || 'registered restaurant'})${address ? `\nDeliver to: ${address}` : ''}${paymentUrl ? `\nPayment: ${paymentUrl}` : ''}`;
-  const recipients = [];
-
-  if (vendor?.phone) {
-    recipients.push(vendor.phone);
-  }
-  if (ORDER_NOTIFY_NUMBER) {
-    recipients.push(ORDER_NOTIFY_NUMBER);
-  }
-
-  if (recipients.length === 0) {
-    console.warn('No WhatsApp recipient is configured for the new order.');
-    return;
-  }
-
-  // Accept / Decline / Unavailable buttons — only meaningful on the actual
-  // order, so they go out alongside the notification whenever we have an
-  // orderId. "Accept" leads to the prep-time picker (vendor_accept_prompt_),
-  // "Decline" just rejects this one order (vendor_reject_), and
-  // "Unavailable" rejects this order AND closes the restaurant for further
-  // orders (vendor_unavailable_) — see handleDispatchPayload for all three.
-  const replies = orderId
-    ? [
-        { type: 'text', body },
-        getVendorOrderActionButtonsReply(orderId)
-      ]
-    : [{ type: 'text', body }];
-
-  for (const recipient of recipients) {
-    for (const reply of replies) {
-      await sendWhatsAppMessage(recipient, reply);
-    }
-  }
 }
 
 function handleMealPlanPlaceholder() {
@@ -2648,14 +2783,14 @@ function getPostVendorButtonsReply(bodyText = 'What would you like to do next?')
 }
 
 // --- Vendor order-action buttons -------------------------------------------
-// Shown immediately when a new order comes in, BEFORE any prep time is
-// picked. Three options:
+// Shown once payment is confirmed (see handlePaystackChargeSuccess), BEFORE
+// any prep time is picked. Three options:
 //   ✅ Accept       -> vendor_accept_prompt_<orderId>  (shows prep-time picker)
 //   ❌ Decline      -> vendor_reject_<orderId>          (rejects just this order)
 //   🚫 Unavailable  -> vendor_unavailable_<orderId>     (rejects this order AND
 //                                                          closes the restaurant)
 // All three payloads are handled in handleDispatchPayload above.
-function getVendorOrderActionButtonsReply(orderId, bodyText = 'New order! Would you like to accept it?') {
+function getVendorOrderActionButtonsReply(orderId, bodyText = 'New paid order! Would you like to accept it?') {
   return {
     type: 'interactive',
     interactive: {
