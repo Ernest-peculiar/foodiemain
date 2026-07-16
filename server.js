@@ -4,6 +4,7 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const sharp = require('sharp');
 const { createClient } = require('@supabase/supabase-js');
 const dispatch = require('./lib/order-dispatch');
 const app = express();
@@ -1515,19 +1516,15 @@ app.post('/webhook/paystack', async (req, res) => {
   }
 });
 
-// --- HTML for the branded "payment successful" confirmation page -----------
-// Shown to the customer's BROWSER right after they finish paying on
-// Paystack's hosted page and get redirected back to /paystack/callback (see
-// that route below). Purely cosmetic — the actual receipt/vendor
-// notification logic all lives in handlePaystackChargeSuccess() and is
-// unaffected by this.
-//
-// Expects an image at public/images/payment-success.png (served via the
-// existing `app.use('/images', express.static(...))` mount above). Drop
-// your branded "Payment Successful" artwork there — any filename works as
-// long as you update PAYMENT_SUCCESS_IMAGE below to match.
-const PAYMENT_SUCCESS_IMAGE = 'payment-success.png';
-
+// --- Branded Foodie receipt image -------------------------------------------
+// The customer-facing receipt is now delivered as a PNG image straight into
+// the WhatsApp chat (see handlePaystackChargeSuccess below), not as a public
+// webpage. buildReceiptSVG() renders the same yellow/white branded layout the
+// old /paystack/callback HTML page used, and generateReceiptPNG() rasterizes
+// it with sharp. uploadWhatsAppMedia() then pushes the PNG straight to
+// WhatsApp's Media endpoint and hands back a media id — no public URL is
+// required for this image at all, unlike the driver/delivery photos which
+// are stored in Supabase and sent by link.
 function escapeHtml(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -1537,15 +1534,99 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
-function buildPaymentSuccessPage({ name, amount, paidAt }) {
-  const safeName = escapeHtml(name || 'there');
-  const formattedAmount = `₦${(Number(amount) || 0).toLocaleString('en-US')}`;
-  const formattedTime = new Date(paidAt || Date.now()).toLocaleString('en-NG', {
+function buildReceiptSVG({ orderId, vendorName, itemTitle, qty, unitPrice, total, address, reference, paidAt }) {
+  const date = new Date(paidAt || Date.now()).toLocaleString('en-NG', {
     dateStyle: 'medium',
     timeStyle: 'short'
   });
-  const imageUrl = `${PUBLIC_URL}/images/${PAYMENT_SUCCESS_IMAGE}`;
 
+  const rows = [
+    ['Order', `#${orderId}`],
+    ['Item', `${qty} x ${itemTitle}`],
+    ['Unit price', `₦${(Number(unitPrice) || 0).toLocaleString('en-US')}`],
+    ['Restaurant', vendorName || '—'],
+    ['Deliver to', address || '—'],
+    ['Paid', date],
+    ['Reference', reference || '—']
+  ];
+
+  const rowHeight = 46;
+  const rowsStartY = 230;
+  const cardBodyHeight = rowsStartY + rows.length * rowHeight + 40;
+  const cardHeight = cardBodyHeight - 40;
+  const canvasHeight = cardHeight + 120;
+
+  const rowSvg = rows.map(([label, value], i) => {
+    const y = rowsStartY + i * rowHeight;
+    return `
+      <text x="60" y="${y}" font-family="Arial, sans-serif" font-size="13" letter-spacing="0.6" fill="#888888">${escapeHtml(label.toUpperCase())}</text>
+      <text x="60" y="${y + 22}" font-family="Arial, sans-serif" font-size="17" font-weight="600" fill="#222222">${escapeHtml(String(value))}</text>`;
+  }).join('');
+
+  return `<svg width="640" height="${canvasHeight}" viewBox="0 0 640 ${canvasHeight}" xmlns="http://www.w3.org/2000/svg">
+  <rect width="640" height="${canvasHeight}" fill="#FFC72C" />
+  <rect x="40" y="40" width="560" height="${cardHeight}" rx="20" fill="#FFFFFF" />
+  <text x="320" y="95" font-family="Arial, sans-serif" font-size="26" font-weight="700" fill="#222222" text-anchor="middle">🧾 Foodie Receipt</text>
+  <text x="320" y="130" font-family="Arial, sans-serif" font-size="14" fill="#888888" text-anchor="middle">Payment confirmed</text>
+  <line x1="60" y1="160" x2="580" y2="160" stroke="#eeeeee" stroke-width="1" />
+  <text x="320" y="200" font-family="Arial, sans-serif" font-size="30" font-weight="700" fill="#1a7f37" text-anchor="middle">₦${(Number(total) || 0).toLocaleString('en-US')}</text>
+  ${rowSvg}
+</svg>`;
+}
+
+// Rasterizes the branded receipt SVG to a PNG buffer with sharp.
+async function generateReceiptPNG(receiptData) {
+  const svg = buildReceiptSVG(receiptData);
+  return sharp(Buffer.from(svg)).png().toBuffer();
+}
+
+// Uploads a buffer directly to WhatsApp's Media endpoint (POST
+// /{phone-number-id}/media) and returns the resulting media id. Sending an
+// image by id instead of by link means anything generated on-the-fly (like
+// the receipt above) never needs to be hosted at a public URL at all.
+async function uploadWhatsAppMedia(buffer, mimeType, filename) {
+  if (!WHATSAPP_TOKEN || !WHATSAPP_PHONE_NUMBER_ID) {
+    console.warn('WhatsApp credentials are not configured — cannot upload media.');
+    return null;
+  }
+
+  const url = `https://graph.facebook.com/${WHATSAPP_API_VERSION}/${WHATSAPP_PHONE_NUMBER_ID}/media`;
+
+  try {
+    const form = new FormData();
+    form.append('messaging_product', 'whatsapp');
+    form.append('type', mimeType);
+    form.append('file', new Blob([buffer], { type: mimeType }), filename);
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
+      body: form
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok || !data.id) {
+      console.error('Failed to upload media to WhatsApp:', data);
+      return null;
+    }
+
+    return data.id;
+  } catch (error) {
+    console.error('WhatsApp media upload failed (network/exception):', error.message || error);
+    return null;
+  }
+}
+
+// --- HTML for the branded "payment successful" confirmation page -----------
+// Shown to the customer's BROWSER right after they finish paying on
+// Paystack's hosted page and get redirected back to /paystack/callback (see
+// that route below). Intentionally minimal now: the real, order-specific
+// receipt (name/amount/items) is delivered as an image straight into the
+// customer's WhatsApp chat by handlePaystackChargeSuccess(), so this page no
+// longer needs to (and should not) display any personal order details to
+// whoever holds the callback URL/reference.
+function buildPaymentSuccessPage() {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1563,45 +1644,26 @@ function buildPaymentSuccessPage({ name, amount, paidAt }) {
     justify-content: center;
     min-height: 100vh;
     padding: 24px;
+    text-align: center;
   }
-  .card { max-width: 420px; width: 100%; text-align: center; }
-  .card img { max-width: 100%; height: auto; display: block; margin: 0 auto; }
-  .details {
+  .card {
+    max-width: 420px;
+    width: 100%;
     background: #fff;
     border-radius: 16px;
-    padding: 20px 24px;
-    margin-top: 16px;
+    padding: 36px 28px;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
   }
-  .details .row { margin: 10px 0; }
-  .details .label {
-    color: #888;
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.6px;
-    margin-bottom: 2px;
-  }
-  .details .value { color: #222; font-size: 16px; font-weight: 500; }
-  .details .amount { color: #1a7f37; font-size: 24px; font-weight: 700; }
+  .check { font-size: 40px; margin-bottom: 8px; }
+  h1 { font-size: 20px; color: #222; margin: 0 0 10px; }
+  p { color: #555; font-size: 15px; margin: 0; line-height: 1.5; }
 </style>
 </head>
 <body>
   <div class="card">
-    <img src="${imageUrl}" alt="Payment Successful" />
-    <div class="details">
-      <div class="row">
-        <div class="label">Name</div>
-        <div class="value">${safeName}</div>
-      </div>
-      <div class="row">
-        <div class="label">Amount Paid</div>
-        <div class="value amount">${formattedAmount}</div>
-      </div>
-      <div class="row">
-        <div class="label">Time</div>
-        <div class="value">${formattedTime}</div>
-      </div>
-    </div>
+    <div class="check">✅</div>
+    <h1>Payment received</h1>
+    <p>Your receipt and order confirmation have been sent to you on WhatsApp. You can safely close this page.</p>
   </div>
 </body>
 </html>`;
@@ -1619,15 +1681,15 @@ function buildPaymentSuccessPage({ name, amount, paidAt }) {
 // idempotent — it checks `orderRow.payment_status === 'paid'` and returns
 // immediately if the order was already completed — so having both this
 // route and the webhook able to trigger it is safe: whichever fires first
-// does the real work (update order, build receipt, message the customer,
-// notify the vendor), and the other becomes a no-op. This guards against a
-// double receipt / double vendor notification race, while making this
-// callback route a genuine second chance to complete the order if the
-// webhook is ever delayed, unreachable, or misconfigured.
+// does the real work (update order, generate + send the receipt image,
+// message the customer, notify the vendor), and the other becomes a no-op.
+// This guards against a double receipt / double vendor notification race,
+// while making this callback route a genuine second chance to complete the
+// order if the webhook is ever delayed, unreachable, or misconfigured.
 //
-// handlePaystackChargeSuccess() now RETURNS the order row (or null on
-// failure/not-found) so this route can render the branded confirmation page
-// with the customer's name, amount paid, and time — see buildPaymentSuccessPage above.
+// The page rendered here is now a generic "check WhatsApp" confirmation —
+// see buildPaymentSuccessPage() above — since the actual receipt goes
+// straight to the customer's WhatsApp chat as an image, not to this page.
 app.get('/paystack/callback', async (req, res) => {
   const { reference } = req.query;
 
@@ -1645,21 +1707,17 @@ app.get('/paystack/callback', async (req, res) => {
       // Reuse the same idempotent handler the webhook calls — do NOT
       // duplicate the order-lookup / status-update / receipt / vendor-notify
       // logic here. See the comment above this route for why.
-      let orderRow = null;
       try {
-        orderRow = await handlePaystackChargeSuccess(result.data);
+        await handlePaystackChargeSuccess(result.data);
       } catch (error) {
         // Don't let a failure here break the confirmation page — if this
         // fails, the webhook (server-to-server, with its own retries from
-        // Paystack) remains the backstop that completes the order.
+        // Paystack) remains the backstop that completes the order and
+        // delivers the WhatsApp receipt.
         console.error('handlePaystackChargeSuccess failed from /paystack/callback:', error);
       }
 
-      return res.send(buildPaymentSuccessPage({
-        name: orderRow?.customer_name,
-        amount: orderRow?.total,
-        paidAt: orderRow?.paid_at
-      }));
+      return res.send(buildPaymentSuccessPage());
     }
 
     return res.send('<h2>⚠️ Payment not confirmed</h2><p>If you completed payment, please return to WhatsApp and wait a moment for your receipt. Contact support if it does not arrive.</p>');
@@ -1669,8 +1727,9 @@ app.get('/paystack/callback', async (req, res) => {
   }
 });
 
-// Builds the receipt text sent to both the customer and the vendor once
-// payment is confirmed.
+// Builds the receipt text sent to the vendor once payment is confirmed, and
+// used as a text fallback to the customer if the branded receipt image
+// fails to generate or send for any reason (see handlePaystackChargeSuccess).
 function buildReceiptText({ orderId, vendorName, itemTitle, qty, unitPrice, total, address, reference, paidAt }) {
   const date = new Date(paidAt || Date.now()).toLocaleString('en-NG', { dateStyle: 'medium', timeStyle: 'short' });
   return `🧾 *Receipt* — Order ${orderId}\n\n`
@@ -1684,16 +1743,15 @@ function buildReceiptText({ orderId, vendorName, itemTitle, qty, unitPrice, tota
 }
 
 // Fires once Paystack confirms a successful charge for a given reference.
-// This is the payment gate: the customer gets their receipt here, and the
-// vendor is notified (receipt + Accept/Decline/Unavailable buttons) here.
-// It is called from TWO places: the server-to-server /webhook/paystack
-// handler above, and the browser-facing /paystack/callback route above —
-// see the comment on that route for why calling it from both is safe.
+// This is the payment gate: the customer receives a branded receipt image
+// plus a confirmation text here, and the vendor is notified (receipt text +
+// Accept/Decline/Unavailable buttons) here. It is called from TWO places:
+// the server-to-server /webhook/paystack handler above, and the
+// browser-facing /paystack/callback route above — see the comment on that
+// route for why calling it from both is safe.
 //
 // RETURN VALUE: returns the (updated) order row, or null if the reference
-// couldn't be resolved to an order or the update failed. /paystack/callback
-// uses this to render the branded confirmation page with the customer's
-// name/amount/time. The /webhook/paystack handler ignores the return value.
+// couldn't be resolved to an order or the update failed.
 //
 // FIX (receipt not arriving): the order row is looked up by
 // `paystack_reference`, but that column is only populated in a SEPARATE
@@ -1749,8 +1807,7 @@ async function handlePaystackChargeSuccess(data) {
   // /paystack/callback browser route, so make sure a retry / duplicate
   // trigger never sends a second receipt/notification. Still return the
   // order row so a repeat visit to /paystack/callback (e.g. the customer
-  // hits back/refresh after already paying) shows the same confirmation
-  // page instead of a blank one.
+  // hits back/refresh after already paying) is a safe no-op.
   if (orderRow.payment_status === 'paid') return orderRow;
 
   const paidAt = new Date().toISOString();
@@ -1778,7 +1835,7 @@ async function handlePaystackChargeSuccess(data) {
   const unitPrice = firstItem.price || 0;
   const total = Number(orderRow.total) || (unitPrice * qty);
 
-  const receiptText = buildReceiptText({
+  const receiptData = {
     orderId: orderRow.id,
     vendorName: orderRow.restaurant_name,
     itemTitle,
@@ -1788,12 +1845,43 @@ async function handlePaystackChargeSuccess(data) {
     address: orderRow.delivery_address,
     reference,
     paidAt
-  });
+  };
+  const receiptText = buildReceiptText(receiptData);
 
-  // Receipt to the customer — first confirmation they get that money has
-  // actually moved, as opposed to just having been shown a payment link.
+  // --- Customer: branded receipt image + confirmation text -----------------
+  // This replaces the old "redirect to a webpage" flow entirely. The
+  // customer never has to leave WhatsApp to see their receipt.
   if (orderRow.customer_phone) {
-    await sendWhatsAppMessage(orderRow.customer_phone, { type: 'text', body: receiptText });
+    let receiptImageSent = false;
+
+    try {
+      const pngBuffer = await generateReceiptPNG(receiptData);
+      const mediaId = await uploadWhatsAppMedia(pngBuffer, 'image/png', `receipt-${orderRow.id}.png`);
+
+      if (mediaId) {
+        await sendWhatsAppMessage(orderRow.customer_phone, {
+          type: 'image',
+          mediaId,
+          caption: `🧾 Receipt for order ${orderRow.id}`
+        });
+        receiptImageSent = true;
+      }
+    } catch (error) {
+      console.error('Failed to generate/send receipt image:', error.message || error);
+    }
+
+    // Never leave the customer with nothing if PNG generation or the
+    // WhatsApp media upload fails for any reason — fall back to the plain
+    // text receipt that used to be the only thing sent here.
+    if (!receiptImageSent) {
+      await sendWhatsAppMessage(orderRow.customer_phone, { type: 'text', body: receiptText });
+    }
+
+    await sendWhatsAppMessage(orderRow.customer_phone, {
+      type: 'text',
+      body: '✅ Payment Successful! Your order has been confirmed and is now being prepared.'
+    });
+
     await saveProfile(orderRow.customer_phone, {
       lastOrder: {
         vendorName: orderRow.restaurant_name,
@@ -3154,7 +3242,11 @@ async function sendWhatsAppMessage(to, reply) {
   };
 
   if (reply.type === 'image') {
-    payload.image = { link: reply.imageUrl };
+    // reply.mediaId (preferred, used for anything generated on-the-fly —
+    // e.g. the branded receipt PNG, see generateReceiptPNG/uploadWhatsAppMedia
+    // above) or reply.imageUrl (still used for the driver photo pulled back
+    // out of Supabase storage, which already has a public URL).
+    payload.image = reply.mediaId ? { id: reply.mediaId } : { link: reply.imageUrl };
     const caption = reply.caption || reply.body;
     if (caption) payload.caption = caption;
   } else if (reply.type === 'interactive') {
