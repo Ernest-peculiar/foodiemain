@@ -1485,17 +1485,16 @@ app.post('/webhook', async (req, res) => {
 });
 
 // --- Paystack webhook -------------------------------------------------------
-// This is the ONLY place a customer receives a payment receipt and a vendor
-// is notified of a new paid order. `handleOrderAwaitAddress` below only ever
-// creates an `unpaid` order and hands the customer a payment link — nothing
-// downstream (receipt, vendor accept/decline card) fires until Paystack
-// confirms the charge here.
+// This is the ONLY server-to-server, signature-verified confirmation of a
+// successful charge. handlePaystackChargeSuccess() below is idempotent (it
+// no-ops if the order is already payment_status === 'paid'), which is what
+// lets /paystack/callback (further down) safely reuse it too instead of
+// re-implementing "mark paid -> receipt -> notify vendor" a second time.
 //
 // Set this URL in your Paystack dashboard (Settings -> API Keys & Webhooks):
 //   https://<your-public-domain>/webhook/paystack
 // (Note: this is different from `callback_url`, which only controls where
-// the customer's browser redirects after paying — it is not reliable for
-// server-side confirmation since the customer may close the tab.)
+// the customer's browser redirects after paying.)
 app.post('/webhook/paystack', async (req, res) => {
   const signature = req.headers['x-paystack-signature'];
 
@@ -1529,24 +1528,22 @@ app.post('/webhook/paystack', async (req, res) => {
 });
 
 // --- Paystack browser redirect (callback_url) -------------------------------
-// This is DIFFERENT from the /webhook/paystack route above. That one is
-// server-to-server, signature-verified, and is the single source of truth
-// for order state — it's what actually marks an order paid, sends the
-// customer's receipt, and pings the vendor with Accept/Decline buttons.
+// This is where the CUSTOMER'S BROWSER lands after they finish (or abandon)
+// checkout on Paystack's hosted payment page — see `callback_url` in
+// createPaystackTransaction() above. Without this route, the customer would
+// hit a raw "Cannot GET /paystack/callback" error page after paying.
 //
-// This route is just where the CUSTOMER'S BROWSER lands after they finish
-// (or abandon) checkout on Paystack's hosted payment page — see
-// `callback_url` in createPaystackTransaction() above. Without this route,
-// Express has nothing registered at GET /paystack/callback, so the customer
-// was hitting a raw "Cannot GET /paystack/callback" error page after paying
-// — payment and order processing still worked (that's all driven by the
-// webhook), but it looked broken from the customer's side.
-//
-// Deliberately does NOT touch order state or send any WhatsApp messages —
-// that stays the webhook's job only, so we never risk a double receipt or a
-// double vendor notification racing the webhook for the same order. This
-// route just re-verifies the transaction (read-only) so it can show the
-// customer an accurate confirmation page.
+// This route now ALSO completes the order (mark paid -> receipt -> notify
+// vendor) by delegating to handlePaystackChargeSuccess(), the exact same
+// function the server-to-server webhook above calls. That function is
+// idempotent — it checks `orderRow.payment_status === 'paid'` and returns
+// immediately if the order was already completed — so having both this
+// route and the webhook able to trigger it is safe: whichever fires first
+// does the real work (update order, build receipt, message the customer,
+// notify the vendor), and the other becomes a no-op. This guards against a
+// double receipt / double vendor notification race, while making this
+// callback route a genuine second chance to complete the order if the
+// webhook is ever delayed, unreachable, or misconfigured.
 app.get('/paystack/callback', async (req, res) => {
   const { reference } = req.query;
 
@@ -1561,6 +1558,18 @@ app.get('/paystack/callback', async (req, res) => {
     const result = await response.json().catch(() => null);
 
     if (result?.status && result?.data?.status === 'success') {
+      // Reuse the same idempotent handler the webhook calls — do NOT
+      // duplicate the order-lookup / status-update / receipt / vendor-notify
+      // logic here. See the comment above this route for why.
+      try {
+        await handlePaystackChargeSuccess(result.data);
+      } catch (error) {
+        // Don't let a failure here break the confirmation page — if this
+        // fails, the webhook (server-to-server, with its own retries from
+        // Paystack) remains the backstop that completes the order.
+        console.error('handlePaystackChargeSuccess failed from /paystack/callback:', error);
+      }
+
       return res.send('<h2>✅ Payment successful</h2><p>You can close this tab and return to WhatsApp — your receipt is on its way.</p>');
     }
 
@@ -1587,8 +1596,10 @@ function buildReceiptText({ orderId, vendorName, itemTitle, qty, unitPrice, tota
 
 // Fires once Paystack confirms a successful charge for a given reference.
 // This is the payment gate: the customer gets their receipt here, and the
-// vendor is notified (receipt + Accept/Decline/Unavailable buttons) here —
-// neither happens any earlier in the flow.
+// vendor is notified (receipt + Accept/Decline/Unavailable buttons) here.
+// It is called from TWO places: the server-to-server /webhook/paystack
+// handler above, and the browser-facing /paystack/callback route above —
+// see the comment on that route for why calling it from both is safe.
 //
 // FIX (receipt not arriving): the order row is looked up by
 // `paystack_reference`, but that column is only populated in a SEPARATE
@@ -1640,7 +1651,9 @@ async function handlePaystackChargeSuccess(data) {
   }
 
   // Idempotency — Paystack retries webhook delivery on any non-2xx or
-  // timeout, so make sure a retry never sends a second receipt/notification.
+  // timeout, AND this same function can also be triggered by the
+  // /paystack/callback browser route, so make sure a retry / duplicate
+  // trigger never sends a second receipt/notification.
   if (orderRow.payment_status === 'paid') return;
 
   const paidAt = new Date().toISOString();
@@ -2450,8 +2463,9 @@ function getRoundedAmount(amount) {
 }
 
 // Now accepts a `reference` — this is the order's own id, passed straight
-// through to Paystack so the /webhook/paystack handler can match the
-// eventual charge.success event back to a specific order row.
+// through to Paystack so both the /webhook/paystack handler and the
+// /paystack/callback route can match the eventual confirmed charge back to
+// a specific order row.
 //
 // FIX: previously any non-2xx response from Paystack was swallowed —
 // `if (!response.ok) return null;` discarded the response body entirely,
@@ -2557,9 +2571,10 @@ function isLikelyValidAddress(text) {
 // the customer a payment link — nothing else happens yet. The vendor is NOT
 // notified here, and the customer does NOT get a receipt here. Both of those
 // only fire from handlePaystackChargeSuccess() once Paystack confirms the
-// charge via /webhook/paystack. If the item has no price set, we skip
-// payment entirely and also skip notifying the vendor, per policy — the
-// customer is just told to try again once pricing is fixed.
+// charge — triggered either by /webhook/paystack or /paystack/callback. If
+// the item has no price set, we skip payment entirely and also skip
+// notifying the vendor, per policy — the customer is just told to try again
+// once pricing is fixed.
 async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
   const menuItems = Array.isArray(session.menuItems) ? session.menuItems : [];
   const combo = menuItems[session.selectedComboIdx];
@@ -2605,8 +2620,8 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
   }
 
   // Create the order in an unpaid state first so we have an id to use as
-  // the Paystack reference — that's what lets the webhook match a
-  // confirmed payment back to this exact order.
+  // the Paystack reference — that's what lets the webhook and callback
+  // route match a confirmed payment back to this exact order.
   //
   // IMPORTANT: everything below is wrapped in try/catch. Without it, an
   // exception thrown by dispatch.createOrderRecord / dispatch.updateOrderStatus
@@ -2683,7 +2698,7 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
 
   // NOTE: no sendOrderNotification / vendor ping and no saveProfile(lastOrder)
   // here anymore — both now happen only inside handlePaystackChargeSuccess(),
-  // once Paystack actually confirms the charge.
+  // once Paystack actually confirms the charge (via either trigger route).
 
   return {
     replies: {
