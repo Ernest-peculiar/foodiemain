@@ -1046,18 +1046,6 @@ async function handleDeliveryPhotoMessage(message, phone, session) {
 //    prompt text below), not verified technically.
 // 2. This calls dispatch.uploadDriverPhoto(...), which must exist in
 //    lib/order-dispatch.js (mirroring the existing uploadDeliveryPhoto).
-//    Example implementation, assuming a public `driver-photos` Storage
-//    bucket:
-//
-//      async function uploadDriverPhoto(supabase, phone, buffer, mimeType, filename) {
-//        const { data, error } = await supabase.storage
-//          .from('driver-photos')
-//          .upload(`${phone}/${filename}`, buffer, { contentType: mimeType, upsert: true });
-//        if (error) throw error;
-//        const { data: pub } = supabase.storage.from('driver-photos').getPublicUrl(data.path);
-//        return pub.publicUrl;
-//      }
-//
 // 3. dispatch.upsertDriver(...) needs to accept and persist `photoUrl` and
 //    `vehicleType`. Add `photo_url text` and `vehicle_type text` columns
 //    (nullable, for existing drivers) to the `drivers` table in
@@ -1527,6 +1515,98 @@ app.post('/webhook/paystack', async (req, res) => {
   }
 });
 
+// --- HTML for the branded "payment successful" confirmation page -----------
+// Shown to the customer's BROWSER right after they finish paying on
+// Paystack's hosted page and get redirected back to /paystack/callback (see
+// that route below). Purely cosmetic — the actual receipt/vendor
+// notification logic all lives in handlePaystackChargeSuccess() and is
+// unaffected by this.
+//
+// Expects an image at public/images/payment-success.png (served via the
+// existing `app.use('/images', express.static(...))` mount above). Drop
+// your branded "Payment Successful" artwork there — any filename works as
+// long as you update PAYMENT_SUCCESS_IMAGE below to match.
+const PAYMENT_SUCCESS_IMAGE = 'payment-success.png';
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function buildPaymentSuccessPage({ name, amount, paidAt }) {
+  const safeName = escapeHtml(name || 'there');
+  const formattedAmount = `₦${(Number(amount) || 0).toLocaleString('en-US')}`;
+  const formattedTime = new Date(paidAt || Date.now()).toLocaleString('en-NG', {
+    dateStyle: 'medium',
+    timeStyle: 'short'
+  });
+  const imageUrl = `${PUBLIC_URL}/images/${PAYMENT_SUCCESS_IMAGE}`;
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Payment Successful — Foodie</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #FFC72C;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    padding: 24px;
+  }
+  .card { max-width: 420px; width: 100%; text-align: center; }
+  .card img { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+  .details {
+    background: #fff;
+    border-radius: 16px;
+    padding: 20px 24px;
+    margin-top: 16px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  }
+  .details .row { margin: 10px 0; }
+  .details .label {
+    color: #888;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    margin-bottom: 2px;
+  }
+  .details .value { color: #222; font-size: 16px; font-weight: 500; }
+  .details .amount { color: #1a7f37; font-size: 24px; font-weight: 700; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <img src="${imageUrl}" alt="Payment Successful" />
+    <div class="details">
+      <div class="row">
+        <div class="label">Name</div>
+        <div class="value">${safeName}</div>
+      </div>
+      <div class="row">
+        <div class="label">Amount Paid</div>
+        <div class="value amount">${formattedAmount}</div>
+      </div>
+      <div class="row">
+        <div class="label">Time</div>
+        <div class="value">${formattedTime}</div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>`;
+}
+
 // --- Paystack browser redirect (callback_url) -------------------------------
 // This is where the CUSTOMER'S BROWSER lands after they finish (or abandon)
 // checkout on Paystack's hosted payment page — see `callback_url` in
@@ -1544,6 +1624,10 @@ app.post('/webhook/paystack', async (req, res) => {
 // double receipt / double vendor notification race, while making this
 // callback route a genuine second chance to complete the order if the
 // webhook is ever delayed, unreachable, or misconfigured.
+//
+// handlePaystackChargeSuccess() now RETURNS the order row (or null on
+// failure/not-found) so this route can render the branded confirmation page
+// with the customer's name, amount paid, and time — see buildPaymentSuccessPage above.
 app.get('/paystack/callback', async (req, res) => {
   const { reference } = req.query;
 
@@ -1561,8 +1645,9 @@ app.get('/paystack/callback', async (req, res) => {
       // Reuse the same idempotent handler the webhook calls — do NOT
       // duplicate the order-lookup / status-update / receipt / vendor-notify
       // logic here. See the comment above this route for why.
+      let orderRow = null;
       try {
-        await handlePaystackChargeSuccess(result.data);
+        orderRow = await handlePaystackChargeSuccess(result.data);
       } catch (error) {
         // Don't let a failure here break the confirmation page — if this
         // fails, the webhook (server-to-server, with its own retries from
@@ -1570,7 +1655,11 @@ app.get('/paystack/callback', async (req, res) => {
         console.error('handlePaystackChargeSuccess failed from /paystack/callback:', error);
       }
 
-      return res.send('<h2>✅ Payment successful</h2><p>You can close this tab and return to WhatsApp — your receipt is on its way.</p>');
+      return res.send(buildPaymentSuccessPage({
+        name: orderRow?.customer_name,
+        amount: orderRow?.total,
+        paidAt: orderRow?.paid_at
+      }));
     }
 
     return res.send('<h2>⚠️ Payment not confirmed</h2><p>If you completed payment, please return to WhatsApp and wait a moment for your receipt. Contact support if it does not arrive.</p>');
@@ -1601,6 +1690,11 @@ function buildReceiptText({ orderId, vendorName, itemTitle, qty, unitPrice, tota
 // handler above, and the browser-facing /paystack/callback route above —
 // see the comment on that route for why calling it from both is safe.
 //
+// RETURN VALUE: returns the (updated) order row, or null if the reference
+// couldn't be resolved to an order or the update failed. /paystack/callback
+// uses this to render the branded confirmation page with the customer's
+// name/amount/time. The /webhook/paystack handler ignores the return value.
+//
 // FIX (receipt not arriving): the order row is looked up by
 // `paystack_reference`, but that column is only populated in a SEPARATE
 // write inside handleOrderAwaitAddress AFTER the payment link is already
@@ -1621,7 +1715,7 @@ function buildReceiptText({ orderId, vendorName, itemTitle, qty, unitPrice, tota
 // of silently orphaning a paid order.
 async function handlePaystackChargeSuccess(data) {
   const reference = data?.reference;
-  if (!reference || !supabase) return;
+  if (!reference || !supabase) return null;
 
   let { data: orderRow, error } = await supabase
     .from('orders')
@@ -1643,18 +1737,21 @@ async function handlePaystackChargeSuccess(data) {
 
   if (error) {
     console.error('Failed to look up order for Paystack reference', reference, error.message);
-    return;
+    return null;
   }
   if (!orderRow) {
     console.warn(`No order found for Paystack reference ${reference} — ignoring webhook.`);
-    return;
+    return null;
   }
 
   // Idempotency — Paystack retries webhook delivery on any non-2xx or
   // timeout, AND this same function can also be triggered by the
   // /paystack/callback browser route, so make sure a retry / duplicate
-  // trigger never sends a second receipt/notification.
-  if (orderRow.payment_status === 'paid') return;
+  // trigger never sends a second receipt/notification. Still return the
+  // order row so a repeat visit to /paystack/callback (e.g. the customer
+  // hits back/refresh after already paying) shows the same confirmation
+  // page instead of a blank one.
+  if (orderRow.payment_status === 'paid') return orderRow;
 
   const paidAt = new Date().toISOString();
   // Also (re)persist paystack_reference here in case the order was matched
@@ -1667,8 +1764,12 @@ async function handlePaystackChargeSuccess(data) {
 
   if (updateError) {
     console.error('Failed to mark order paid:', updateError.message);
-    return;
+    return null;
   }
+
+  // Reflect the update locally so callers (and the code below) see the
+  // final paid state without a second round-trip to Supabase.
+  orderRow = { ...orderRow, payment_status: 'paid', paid_at: paidAt, status: 'pending_vendor', paystack_reference: reference };
 
   const items = Array.isArray(orderRow.items) ? orderRow.items : [];
   const firstItem = items[0] || {};
@@ -1722,6 +1823,8 @@ async function handlePaystackChargeSuccess(data) {
   } else {
     console.warn('No vendor phone or ORDER_NOTIFY_NUMBER configured; cannot notify vendor of paid order.');
   }
+
+  return orderRow;
 }
 
 async function handleIncomingMessage(message, value) {
