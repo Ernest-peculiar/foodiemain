@@ -1589,15 +1589,46 @@ function buildReceiptText({ orderId, vendorName, itemTitle, qty, unitPrice, tota
 // This is the payment gate: the customer gets their receipt here, and the
 // vendor is notified (receipt + Accept/Decline/Unavailable buttons) here —
 // neither happens any earlier in the flow.
+//
+// FIX (receipt not arriving): the order row is looked up by
+// `paystack_reference`, but that column is only populated in a SEPARATE
+// write inside handleOrderAwaitAddress AFTER the payment link is already
+// created — see the `dispatch.updateOrderStatus(...)` call wrapped in its
+// own try/catch there. If that particular write fails for any reason (a
+// transient Supabase error, a dropped connection, a schema issue), the
+// customer still gets a working payment link and can still pay
+// successfully, but the order row is left with `paystack_reference` still
+// null. When Paystack later calls this webhook, the lookup below finds
+// nothing, logs one quiet console.warn, and returns — no receipt, no vendor
+// notification, and nothing visible to the customer at all.
+//
+// Since the `reference` we send to Paystack when creating the transaction
+// is always the order's own `id` (see createPaystackTransaction(email,
+// totalAmount, orderRecord.id) in handleOrderAwaitAddress), we can safely
+// fall back to matching on `id` whenever the `paystack_reference` lookup
+// comes back empty. This makes a failed secondary write non-fatal instead
+// of silently orphaning a paid order.
 async function handlePaystackChargeSuccess(data) {
   const reference = data?.reference;
   if (!reference || !supabase) return;
 
-  const { data: orderRow, error } = await supabase
+  let { data: orderRow, error } = await supabase
     .from('orders')
     .select('*')
     .eq('paystack_reference', reference)
     .maybeSingle();
+
+  if (!error && !orderRow) {
+    // Fallback lookup — see the note above the function for why this is
+    // safe: `reference` is always the order's own id.
+    const fallback = await supabase
+      .from('orders')
+      .select('*')
+      .eq('id', reference)
+      .maybeSingle();
+    orderRow = fallback.data;
+    error = fallback.error;
+  }
 
   if (error) {
     console.error('Failed to look up order for Paystack reference', reference, error.message);
@@ -1613,9 +1644,12 @@ async function handlePaystackChargeSuccess(data) {
   if (orderRow.payment_status === 'paid') return;
 
   const paidAt = new Date().toISOString();
+  // Also (re)persist paystack_reference here in case the order was matched
+  // via the id fallback above — this keeps the row consistent going forward
+  // and makes any future lookup by paystack_reference work normally too.
   const { error: updateError } = await supabase
     .from('orders')
-    .update({ payment_status: 'paid', paid_at: paidAt, status: 'pending_vendor' })
+    .update({ payment_status: 'paid', paid_at: paidAt, status: 'pending_vendor', paystack_reference: reference })
     .eq('id', orderRow.id);
 
   if (updateError) {
@@ -2629,6 +2663,12 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
     // Store the reference Paystack actually assigned (falls back to the
     // order id if Paystack didn't echo one back, since we sent it as the
     // reference in the first place).
+    //
+    // NOTE: this write CAN still fail (network blip, transient Supabase
+    // error, etc.), and if it does the customer still gets a valid payment
+    // link below. That used to mean a paid order with no receipt — see the
+    // fallback lookup by order id added in handlePaystackChargeSuccess()
+    // above, which now covers exactly this case.
     try {
       await dispatch.updateOrderStatus(supabase, orderRecord.id, {
         paystack_reference: payment.reference || orderRecord.id
