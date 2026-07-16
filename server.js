@@ -2530,24 +2530,41 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
   // Create the order in an unpaid state first so we have an id to use as
   // the Paystack reference — that's what lets the webhook match a
   // confirmed payment back to this exact order.
-  const orderRecord = await dispatch.createOrderRecord(supabase, {
-    customerName: name,
-    customerPhone: phone,
-    vendor: {
-      id: vendor.id || null,
-      name: vendor.name,
-      phone: vendor.phone || null,
-      isActive: true,
-      isOpen: true
-    },
-    restaurantName: vendor.name,
-    items: [{ title: combo.title || combo.name, qty, price: unitPrice }],
-    subtotal: totalAmount,
-    deliveryFee: 0,
-    total: totalAmount,
-    deliveryAddress: address,
-    status: 'pending_payment'
-  });
+  //
+  // IMPORTANT: everything below is wrapped in try/catch. Without it, an
+  // exception thrown by dispatch.createOrderRecord / dispatch.updateOrderStatus
+  // (e.g. a schema mismatch, a missing column, a Supabase constraint
+  // violation) propagates all the way up through buildReply ->
+  // handleIncomingMessage -> the /webhook handler's catch block, which only
+  // logs to console and sends NO reply to the user at all — from their side
+  // it looks like the bot just went silent after they typed their address.
+  let orderRecord;
+  try {
+    orderRecord = await dispatch.createOrderRecord(supabase, {
+      customerName: name,
+      customerPhone: phone,
+      vendor: {
+        id: vendor.id || null,
+        name: vendor.name,
+        phone: vendor.phone || null,
+        isActive: true,
+        isOpen: true
+      },
+      restaurantName: vendor.name,
+      items: [{ title: combo.title || combo.name, qty, price: unitPrice }],
+      subtotal: totalAmount,
+      deliveryFee: 0,
+      total: totalAmount,
+      deliveryAddress: address,
+      status: 'pending_payment'
+    });
+  } catch (error) {
+    console.error('dispatch.createOrderRecord threw:', error.message || error);
+    return {
+      replies: { type: 'text', body: `Something went wrong starting your order — please try again, or contact support if this keeps happening.` },
+      nextStage: null
+    };
+  }
 
   if (!orderRecord?.id) {
     console.error('createOrderRecord did not return an order id — order was not created. Check lib/order-dispatch.js and the orders table schema.');
@@ -2557,16 +2574,25 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
     };
   }
 
-  const payment = await createPaystackTransaction(email, totalAmount, orderRecord.id);
+  let payment = null;
+  try {
+    payment = await createPaystackTransaction(email, totalAmount, orderRecord.id);
+  } catch (error) {
+    console.error('createPaystackTransaction threw unexpectedly:', error.message || error);
+  }
 
   let paymentMessage;
   if (payment) {
     // Store the reference Paystack actually assigned (falls back to the
     // order id if Paystack didn't echo one back, since we sent it as the
     // reference in the first place).
-    await dispatch.updateOrderStatus(supabase, orderRecord.id, {
-      paystack_reference: payment.reference || orderRecord.id
-    });
+    try {
+      await dispatch.updateOrderStatus(supabase, orderRecord.id, {
+        paystack_reference: payment.reference || orderRecord.id
+      });
+    } catch (error) {
+      console.error('dispatch.updateOrderStatus threw while saving paystack_reference:', error.message || error);
+    }
     paymentMessage = `Please complete payment here: ${payment.authorization_url}\n\nYou'll get a receipt here the moment payment is confirmed — that's also when the restaurant is notified of your order.`;
   } else {
     paymentMessage = `I couldn't create the payment link right now. Please try again later or contact support.`;
