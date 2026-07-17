@@ -1485,9 +1485,24 @@ app.post('/webhook', async (req, res) => {
 // (Note: this is different from `callback_url`, which only controls where
 // the customer's browser redirects after paying.)
 app.post('/webhook/paystack', async (req, res) => {
+  // ALWAYS log that a request landed here at all, unconditionally (not
+  // gated by DEBUG). If this line never shows up in your logs after a test
+  // payment, the request from Paystack is not reaching this server —
+  // that's a routing/URL/hosting problem, not anything below this line.
+  console.log(`📩 /webhook/paystack hit — event=${req.body?.event || '(no event field)'} reference=${req.body?.data?.reference || '(none)'}`);
+
   const signature = req.headers['x-paystack-signature'];
 
-  if (!PAYSTACK_SECRET_KEY || !signature || !req.rawBody) {
+  if (!PAYSTACK_SECRET_KEY) {
+    console.error('🔴 PAYSTACK_SECRET_KEY is not set — rejecting webhook with 400.');
+    return res.sendStatus(400);
+  }
+  if (!signature) {
+    console.error('🔴 Request had no x-paystack-signature header — rejecting with 400. (Is something other than Paystack hitting this URL?)');
+    return res.sendStatus(400);
+  }
+  if (!req.rawBody) {
+    console.error('🔴 req.rawBody is missing — the express.json() verify hook did not run. Check middleware order.');
     return res.sendStatus(400);
   }
 
@@ -1497,9 +1512,11 @@ app.post('/webhook/paystack', async (req, res) => {
     .digest('hex');
 
   if (expectedHash !== signature) {
-    console.warn('Paystack webhook signature mismatch — ignoring request.');
+    console.warn('🔴 Paystack webhook signature mismatch — ignoring request. This usually means PAYSTACK_SECRET_KEY on this server does not match the key for the account that generated the payment link (e.g. test vs live key mismatch).');
     return res.sendStatus(401);
   }
+
+  console.log('✅ Signature verified.');
 
   // Ack immediately — Paystack expects a fast 200 and will retry on timeout,
   // so we don't want slow downstream work (WhatsApp sends, DB writes) to
@@ -1509,10 +1526,13 @@ app.post('/webhook/paystack', async (req, res) => {
   const event = req.body;
   if (event?.event === 'charge.success') {
     try {
-      await handlePaystackChargeSuccess(event.data);
+      const result = await handlePaystackChargeSuccess(event.data);
+      console.log(result ? `✅ handlePaystackChargeSuccess completed for order ${result.id}` : '🔴 handlePaystackChargeSuccess returned null — see warnings above for why (order not found / supabase not configured / update failed).');
     } catch (error) {
-      console.error('Failed to process Paystack charge.success webhook:', error);
+      console.error('🔴 handlePaystackChargeSuccess threw:', error);
     }
+  } else {
+    console.log(`ℹ️ Ignoring non-charge.success event: ${event?.event}`);
   }
 });
 
@@ -1773,7 +1793,16 @@ function buildReceiptText({ orderId, vendorName, itemTitle, qty, unitPrice, tota
 // of silently orphaning a paid order.
 async function handlePaystackChargeSuccess(data) {
   const reference = data?.reference;
-  if (!reference || !supabase) return null;
+  console.log(`→ handlePaystackChargeSuccess called with reference=${reference}`);
+
+  if (!reference) {
+    console.error('🔴 No reference on the Paystack payload — cannot look up an order.');
+    return null;
+  }
+  if (!supabase) {
+    console.error('🔴 Supabase is not configured (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY missing) — cannot look up or update the order, so no receipt can be sent.');
+    return null;
+  }
 
   let { data: orderRow, error } = await supabase
     .from('orders')
@@ -1798,8 +1827,13 @@ async function handlePaystackChargeSuccess(data) {
     return null;
   }
   if (!orderRow) {
-    console.warn(`No order found for Paystack reference ${reference} — ignoring webhook.`);
+    console.warn(`🔴 No order found for Paystack reference ${reference} (checked both paystack_reference and id) — ignoring webhook. Check that the order row's id/paystack_reference actually matches this reference.`);
     return null;
+  }
+
+  console.log(`✅ Order resolved: id=${orderRow.id} customer_phone=${orderRow.customer_phone || '(none!)'} payment_status=${orderRow.payment_status}`);
+  if (!orderRow.customer_phone) {
+    console.error('🔴 orderRow.customer_phone is empty — the receipt/confirmation cannot be sent to WhatsApp because there is no phone number on the order row.');
   }
 
   // Idempotency — Paystack retries webhook delivery on any non-2xx or
@@ -1808,7 +1842,10 @@ async function handlePaystackChargeSuccess(data) {
   // trigger never sends a second receipt/notification. Still return the
   // order row so a repeat visit to /paystack/callback (e.g. the customer
   // hits back/refresh after already paying) is a safe no-op.
-  if (orderRow.payment_status === 'paid') return orderRow;
+  if (orderRow.payment_status === 'paid') {
+    console.log(`ℹ️ Order ${orderRow.id} is already marked paid — treating this as a duplicate webhook delivery and skipping re-send (this is expected on Paystack retries).`);
+    return orderRow;
+  }
 
   const paidAt = new Date().toISOString();
   // Also (re)persist paystack_reference here in case the order was matched
@@ -1855,32 +1892,42 @@ async function handlePaystackChargeSuccess(data) {
     let receiptImageSent = false;
 
     try {
+      console.log('→ Generating receipt PNG...');
       const pngBuffer = await generateReceiptPNG(receiptData);
+      console.log(`✅ PNG generated (${pngBuffer.length} bytes). Uploading to WhatsApp...`);
+
       const mediaId = await uploadWhatsAppMedia(pngBuffer, 'image/png', `receipt-${orderRow.id}.png`);
 
       if (mediaId) {
+        console.log(`✅ Media uploaded, id=${mediaId}. Sending image message to ${orderRow.customer_phone}...`);
         await sendWhatsAppMessage(orderRow.customer_phone, {
           type: 'image',
           mediaId,
           caption: `🧾 Receipt for order ${orderRow.id}`
         });
         receiptImageSent = true;
+      } else {
+        console.error('🔴 uploadWhatsAppMedia returned null — see the "Failed to upload media to WhatsApp" log above for the actual API error (common causes: WHATSAPP_TOKEN expired, WHATSAPP_PHONE_NUMBER_ID wrong, or the token lacks media-upload permission).');
       }
     } catch (error) {
-      console.error('Failed to generate/send receipt image:', error.message || error);
+      console.error('🔴 Exception while generating/sending receipt image:', error.message || error);
+      console.error('   If this says "Blob is not defined" or "FormData is not defined", your Node.js runtime is older than v18 — upgrade Node.');
     }
 
     // Never leave the customer with nothing if PNG generation or the
     // WhatsApp media upload fails for any reason — fall back to the plain
     // text receipt that used to be the only thing sent here.
     if (!receiptImageSent) {
+      console.log('→ Falling back to plain-text receipt.');
       await sendWhatsAppMessage(orderRow.customer_phone, { type: 'text', body: receiptText });
     }
 
+    console.log('→ Sending payment-confirmed text message...');
     await sendWhatsAppMessage(orderRow.customer_phone, {
       type: 'text',
       body: '✅ Payment Successful! Your order has been confirmed and is now being prepared.'
     });
+    console.log('✅ Customer messaging sequence complete.');
 
     await saveProfile(orderRow.customer_phone, {
       lastOrder: {
@@ -3268,7 +3315,11 @@ async function sendWhatsAppMessage(to, reply) {
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    console.error('Failed to send WhatsApp message:', data);
+    console.error(`🔴 Failed to send WhatsApp ${reply.type} message to ${to} (HTTP ${response.status}):`, JSON.stringify(data));
+    const errorCode = data?.error?.code;
+    if (errorCode === 131047 || errorCode === 131026) {
+      console.error(`   ⚠️  This is WhatsApp's 24-hour customer service window error (code ${errorCode}). The customer hasn't messaged the bot within the last 24 hours, so free-form messages (including this receipt) cannot be delivered — only an approved message TEMPLATE can reach them outside that window. If payments can complete a while after the customer last texted the bot, you likely need a WhatsApp message template for the receipt/confirmation.`);
+    }
   } else if (DEBUG) {
     console.log('✅ Message sent successfully!', data);
   }
