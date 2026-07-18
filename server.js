@@ -1810,9 +1810,16 @@ async function handlePaystackChargeSuccess(data) {
     .eq('paystack_reference', reference)
     .maybeSingle();
 
-  if (!error && !orderRow) {
+  if (error) {
+    console.warn(`⚠️ Lookup by paystack_reference failed (${error.message}) — falling back to lookup by id. If this persists, run migrations/002_orders_payment_columns.sql.`);
+  }
+
+  if (!orderRow) {
     // Fallback lookup — see the note above the function for why this is
-    // safe: `reference` is always the order's own id.
+    // safe: `reference` is always the order's own id. This now also runs
+    // when the primary query above ERRORED (not just when it returned zero
+    // rows), so a schema problem on paystack_reference specifically doesn't
+    // also break this fallback path.
     const fallback = await supabase
       .from('orders')
       .select('*')
@@ -3327,6 +3334,57 @@ async function sendWhatsAppMessage(to, reply) {
   await logMessage(to, 'outbound', reply.type, reply.body || reply.caption || null, reply);
 }
 
+// --- Startup schema self-check ----------------------------------------------
+// The exact failure this guards against: "Could not find the
+// 'paystack_reference' column of 'orders'" — a PostgREST schema-cache error
+// that previously only surfaced deep inside handlePaystackChargeSuccess(),
+// i.e. the first time a real customer paid, with no earlier warning. This
+// runs once at boot, queries information_schema directly for the columns
+// the payment flow depends on, and logs a loud, actionable error (naming
+// the exact migration file to run) if any are missing — instead of letting
+// the bot start up looking healthy and then silently failing every payment.
+const REQUIRED_ORDER_COLUMNS = [
+  'paystack_reference', 'payment_status', 'paid_at', 'status',
+  'customer_phone', 'vendor_id', 'restaurant_name', 'items', 'total',
+  'delivery_address', 'driver_id', 'delivery_photo_url', 'customer_confirmed_at'
+];
+
+async function verifyOrdersSchema() {
+  if (!supabase) return; // already warned above about missing Supabase config
+
+  const { data, error } = await supabase
+    .from('information_schema.columns')
+    .select('column_name')
+    .eq('table_schema', 'public')
+    .eq('table_name', 'orders');
+
+  if (error) {
+    // Not fatal — some Supabase projects restrict information_schema access
+    // via RLS/permissions for the service role. Don't block startup over a
+    // check that itself couldn't run; just note it.
+    console.warn(`⚠️  Could not verify the orders table schema at startup (${error.message}). Skipping self-check.`);
+    return;
+  }
+
+  const existingColumns = new Set((data || []).map((row) => row.column_name));
+  const missing = REQUIRED_ORDER_COLUMNS.filter((col) => !existingColumns.has(col));
+
+  if (missing.length > 0) {
+    console.error('');
+    console.error('🔴🔴🔴 STARTUP CHECK FAILED — orders table is missing required columns 🔴🔴🔴');
+    console.error(`   Missing: ${missing.join(', ')}`);
+    console.error('   Payments WILL appear to succeed on Paystack but the bot will be unable to');
+    console.error('   look up the order, mark it paid, or send the WhatsApp receipt — this is');
+    console.error('   exactly the "Could not find the \'paystack_reference\' column" failure.');
+    console.error('   Fix: run migrations/002_orders_payment_columns.sql against this Supabase');
+    console.error('   project (SQL editor, or `supabase db push`), then restart this server.');
+    console.error('');
+  } else {
+    console.log('✅ Startup check: orders table has all required payment columns.');
+  }
+}
+
 app.listen(PORT, () => {
   console.log(`Foodie WhatsApp bot running on port ${PORT}`);
+  verifyOrdersSchema();
 });
