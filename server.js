@@ -26,6 +26,11 @@ const WHATSAPP_API_VERSION = process.env.WHATSAPP_API_VERSION || 'v22.0';
 const GROK_API_KEY = process.env.GROK_API_KEY;
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
 const DEBUG = process.env.DEBUG === 'true';
+// Flat delivery fee (NGN) added to every order's total, on top of the food
+// subtotal. Applied once, in handleOrderAwaitAddress, which every order path
+// (fresh order or "reorder last") passes through before a Paystack payment
+// link is generated — so it's guaranteed to apply to every order.
+const DELIVERY_FEE = Number(process.env.DELIVERY_FEE || 500);
 // WhatsApp number (E.164, e.g. 2348012345678) that gets notified when an order
 // comes in. NOTE: WhatsApp's Business API only allows free-form messages to a
 // number that has messaged the bot within the last 24h, or via an approved
@@ -1484,6 +1489,7 @@ function buildReceiptSVG({ orderId, vendorName, itemTitle, qty, unitPrice, total
     ['Order', `#${orderId}`],
     ['Item', `${qty} x ${itemTitle}`],
     ['Unit price', `₦${(Number(unitPrice) || 0).toLocaleString('en-US')}`],
+    ['Delivery fee', `₦${DELIVERY_FEE.toLocaleString('en-US')}`],
     ['Restaurant', vendorName || '—'],
     ['Deliver to', address || '—'],
     ['Paid', date],
@@ -1674,6 +1680,7 @@ function buildReceiptText({ orderId, vendorName, itemTitle, qty, unitPrice, tota
   const date = new Date(paidAt || Date.now()).toLocaleString('en-NG', { dateStyle: 'medium', timeStyle: 'short' });
   return `🧾 *Receipt* — Order ${orderId}\n\n`
     + `${qty} x ${itemTitle} — ₦${unitPrice.toLocaleString('en-US')} each\n`
+    + `Delivery fee: ₦${DELIVERY_FEE.toLocaleString('en-US')}\n`
     + `*Total paid: ₦${total.toLocaleString('en-US')}*\n\n`
     + `Restaurant: ${vendorName}\n`
     + `Deliver to: ${address}\n`
@@ -2744,6 +2751,11 @@ function isLikelyValidAddress(text) {
 // the item has no price set, we skip payment entirely and also skip
 // notifying the vendor, per policy — the customer is just told to try again
 // once pricing is fixed.
+//
+// A flat DELIVERY_FEE (see top of file) is added on top of the food subtotal
+// here — this is the single place every order path (a fresh order or a
+// "reorder last") passes through before a Paystack payment link is created,
+// so the fee is guaranteed to apply to every order, every time.
 async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
   const menuItems = Array.isArray(session.menuItems) ? session.menuItems : [];
   const combo = menuItems[session.selectedComboIdx];
@@ -2774,7 +2786,9 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
   const address = text.trim();
   const email = parseEmail(text) || `${name.replace(/\s+/g, '.').toLowerCase()}@example.com`;
   const unitPrice = (combo && (combo.price || combo.price === 0)) ? Number(combo.price) : 0;
-  const totalAmount = unitPrice * qty;
+  const subtotal = unitPrice * qty;
+  // Flat delivery fee applied to every order, on top of the food subtotal.
+  const totalAmount = subtotal + DELIVERY_FEE;
 
   // No price set — can't charge, so no payment, no receipt, and (per
   // policy) no vendor notification of any kind. Just tell the customer.
@@ -2813,8 +2827,8 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
       },
       restaurantName: vendor.name,
       items: [{ title: combo.title || combo.name, qty, price: unitPrice }],
-      subtotal: totalAmount,
-      deliveryFee: 0,
+      subtotal,
+      deliveryFee: DELIVERY_FEE,
       total: totalAmount,
       deliveryAddress: address,
       status: 'pending_payment'
@@ -2872,7 +2886,7 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
   return {
     replies: {
       type: 'text',
-      body: `${qty} x *${combo.title || combo.name}* from *${vendor.name}*\nDeliver to: ${address}\nTotal: ₦${totalAmount}\n${paymentMessage}`
+      body: `${qty} x *${combo.title || combo.name}* from *${vendor.name}*\nDeliver to: ${address}\nSubtotal: ₦${subtotal.toLocaleString('en-US')}\nDelivery fee: ₦${DELIVERY_FEE.toLocaleString('en-US')}\n*Total: ₦${totalAmount.toLocaleString('en-US')}*\n${paymentMessage}`
     },
     nextStage: null
   };
