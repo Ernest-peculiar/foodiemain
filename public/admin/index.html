@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Foodie Admin — Add Vendor</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #FAFAFA;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    color: #222;
+  }
+  header {
+    background: #FFC72C;
+    padding: 20px 24px;
+  }
+  header h1 {
+    margin: 0;
+    font-size: 20px;
+  }
+  header p {
+    margin: 4px 0 0;
+    font-size: 13px;
+    color: #4d3c00;
+  }
+  main {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 24px;
+  }
+  .card {
+    background: #fff;
+    border-radius: 14px;
+    padding: 24px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    margin-bottom: 24px;
+  }
+  h2 {
+    font-size: 16px;
+    margin: 0 0 16px;
+  }
+  label {
+    display: block;
+    font-size: 13px;
+    font-weight: 600;
+    margin: 14px 0 6px;
+  }
+  label .optional {
+    font-weight: 400;
+    color: #888;
+  }
+  input[type="text"],
+  input[type="email"],
+  input[type="tel"],
+  input[type="number"],
+  select {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    font-size: 14px;
+    font-family: inherit;
+  }
+  input:focus, select:focus {
+    outline: none;
+    border-color: #FFC72C;
+  }
+  .row {
+    display: flex;
+    gap: 12px;
+  }
+  .row > div {
+    flex: 1;
+  }
+  .hint {
+    font-size: 12px;
+    color: #888;
+    margin-top: 4px;
+  }
+  button {
+    margin-top: 20px;
+    background: #1a7f37;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 12px 20px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    width: 100%;
+  }
+  button:disabled {
+    background: #9db8a4;
+    cursor: not-allowed;
+  }
+  #message {
+    margin-top: 14px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    font-size: 13px;
+    display: none;
+  }
+  #message.success {
+    display: block;
+    background: #eafaf0;
+    color: #1a7f37;
+    border: 1px solid #b7e6c6;
+  }
+  #message.error {
+    display: block;
+    background: #fdeeee;
+    color: #b3261e;
+    border: 1px solid #f3c6c4;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  th, td {
+    text-align: left;
+    padding: 8px 10px;
+    border-bottom: 1px solid #eee;
+  }
+  th {
+    color: #888;
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+  }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .badge.active { background: #eafaf0; color: #1a7f37; }
+  .badge.inactive { background: #fdeeee; color: #b3261e; }
+  .empty {
+    color: #888;
+    font-size: 13px;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>🧾 Foodie Admin</h1>
+  <p>Add Vendor — internal use only, not linked from the WhatsApp bot.</p>
+</header>
+
+<main>
+  <div class="card">
+    <h2>Add a new vendor</h2>
+    <form id="vendorForm">
+      <label for="contactName">Vendor Name</label>
+      <input type="text" id="contactName" name="contactName" placeholder="e.g. Chidi Okafor" required />
+
+      <label for="restaurantName">Restaurant Name</label>
+      <input type="text" id="restaurantName" name="restaurantName" placeholder="e.g. Munchy Kitchen" required />
+
+      <label for="whatsappNumber">WhatsApp Number</label>
+      <input type="tel" id="whatsappNumber" name="whatsappNumber" placeholder="e.g. 2348012345678" required />
+      <div class="hint">Include the country code, no spaces or dashes needed — it will be normalized automatically.</div>
+
+      <label for="email">Email <span class="optional">(optional)</span></label>
+      <input type="email" id="email" name="email" placeholder="e.g. vendor@example.com" />
+
+      <label for="address">Address</label>
+      <input type="text" id="address" name="address" placeholder="e.g. 12 Ogoja Rd, Abakaliki" required />
+
+      <label>GPS Coordinates <span class="optional">(optional)</span></label>
+      <div class="row">
+        <div>
+          <input type="number" step="any" id="latitude" name="latitude" placeholder="Latitude" />
+        </div>
+        <div>
+          <input type="number" step="any" id="longitude" name="longitude" placeholder="Longitude" />
+        </div>
+      </div>
+
+      <label for="openingHours">Opening Hours</label>
+      <input type="text" id="openingHours" name="openingHours" placeholder="e.g. Mon-Sat 9am-9pm" required />
+
+      <label for="status">Status</label>
+      <select id="status" name="status">
+        <option value="active" selected>Active</option>
+        <option value="inactive">Inactive</option>
+      </select>
+
+      <button type="submit" id="submitBtn">Add Vendor</button>
+      <div id="message"></div>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>Registered vendors</h2>
+    <div id="vendorListWrap"><p class="empty">Loading…</p></div>
+  </div>
+</main>
+
+<script>
+  const form = document.getElementById('vendorForm');
+  const messageEl = document.getElementById('message');
+  const submitBtn = document.getElementById('submitBtn');
+  const vendorListWrap = document.getElementById('vendorListWrap');
+
+  function showMessage(text, isError) {
+    messageEl.textContent = text;
+    messageEl.className = isError ? 'error' : 'success';
+  }
+
+  async function loadVendors() {
+    try {
+      const res = await fetch('/admin/api/vendors');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load vendors');
+      renderVendors(data.vendors || []);
+    } catch (err) {
+      vendorListWrap.innerHTML = '<p class="empty">Could not load vendors: ' + escapeHtml(err.message) + '</p>';
+    }
+  }
+
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str == null ? '' : String(str);
+    return div.innerHTML;
+  }
+
+  function renderVendors(vendors) {
+    if (!vendors.length) {
+      vendorListWrap.innerHTML = '<p class="empty">No vendors added yet.</p>';
+      return;
+    }
+    const rows = vendors.map((v) => {
+      const isActive = (v.is_active ?? v.isActive ?? true) !== false;
+      const hasMenu = !!v.menu;
+      return '<tr>'
+        + '<td>' + escapeHtml(v.name) + '<br><span style="color:#888">' + escapeHtml(v.contact_name || '') + '</span></td>'
+        + '<td>' + escapeHtml(v.phone) + '</td>'
+        + '<td>' + escapeHtml(v.address || v.vicinity || '') + '</td>'
+        + '<td>' + escapeHtml(v.opening_hours || '') + '</td>'
+        + '<td><span class="badge ' + (isActive ? 'active' : 'inactive') + '">' + (isActive ? 'Active' : 'Inactive') + '</span></td>'
+        + '<td>' + (hasMenu ? 'Yes' : 'Not yet') + '</td>'
+        + '</tr>';
+    }).join('');
+    vendorListWrap.innerHTML = '<table><thead><tr>'
+      + '<th>Restaurant</th><th>WhatsApp</th><th>Address</th><th>Hours</th><th>Status</th><th>Menu on file</th>'
+      + '</tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    messageEl.className = '';
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Adding…';
+
+    const payload = {
+      contactName: document.getElementById('contactName').value.trim(),
+      restaurantName: document.getElementById('restaurantName').value.trim(),
+      whatsappNumber: document.getElementById('whatsappNumber').value.trim(),
+      email: document.getElementById('email').value.trim(),
+      address: document.getElementById('address').value.trim(),
+      latitude: document.getElementById('latitude').value.trim(),
+      longitude: document.getElementById('longitude').value.trim(),
+      openingHours: document.getElementById('openingHours').value.trim(),
+      status: document.getElementById('status').value
+    };
+
+    try {
+      const res = await fetch('/admin/api/vendors', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to add vendor');
+
+      showMessage('✅ Vendor added and notified on WhatsApp.', false);
+      form.reset();
+      document.getElementById('status').value = 'active';
+      loadVendors();
+    } catch (err) {
+      showMessage('❌ ' + err.message, true);
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Add Vendor';
+    }
+  });
+
+  loadVendors();
+</script>
+</body>
+</html>

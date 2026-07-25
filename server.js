@@ -38,6 +38,16 @@ const DELIVERY_FEE = Number(process.env.DELIVERY_FEE || 500);
 // session with the bot (or a template message — see handlePaystackChargeSuccess()).
 const ORDER_NOTIFY_NUMBER = process.env.ORDER_NOTIFY_NUMBER;
 
+// Credentials that gate the /admin dashboard (Add Vendor page). This is
+// intentionally simple HTTP Basic Auth rather than a full login system —
+// there is exactly one admin user. Set both in .env before deploying;
+// without them the whole /admin surface is locked (fails closed, not open).
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME;
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
+if (!ADMIN_USERNAME || !ADMIN_PASSWORD) {
+  console.warn('⚠️  ADMIN_USERNAME / ADMIN_PASSWORD are not set — the /admin dashboard will reject all requests until both are configured in .env.');
+}
+
 // Supabase persistence: conversation stage/session state + a full inbound/
 // outbound chat log. Use the SERVICE ROLE key here (never the anon key) since
 // this runs server-side and needs to bypass RLS to write on behalf of any
@@ -448,6 +458,12 @@ async function handleRegistrationFlow(text, phone, session) {
     return null;
   }
 
+  // Public vendor self-registration has been removed. Vendors are now added
+  // exclusively through the admin dashboard (see the /admin routes near the
+  // bottom of this file), which upserts the vendor row directly and sends
+  // them a WhatsApp welcome message. If a vendor is already on file (added
+  // by admin, or from before this change), point them at menu management
+  // instead of silently doing nothing.
   if (normalized === 'register vendor') {
     const vendorRecord = await getVendorRecordByPhone(phone);
     if (vendorRecord) {
@@ -459,11 +475,9 @@ async function handleRegistrationFlow(text, phone, session) {
     }
 
     return {
-      replies: [
-        { type: 'text', body: 'Great — I can register your restaurant. What is your restaurant name?' }
-      ],
-      nextStage: 'vendorAwaitName',
-      sessionData: { ...session, registrationRole: 'vendor' }
+      replies: { type: 'text', body: `Restaurant onboarding is now handled by our team. Please contact Foodie support to get your restaurant added — once you're on our platform you'll be able to manage your menu and availability right here.` },
+      nextStage: null,
+      sessionData: session
     };
   }
 
@@ -1350,6 +1364,206 @@ app.get('/', (req, res) => {
   res.send('Foodie WhatsApp bot is running.');
 });
 
+// --- Admin dashboard (Add Vendor) -------------------------------------------
+// Vendors are now onboarded ONLY through this admin-only surface — there is
+// no public "register vendor" flow in the WhatsApp bot anymore (see
+// getNewUserButtonsReply / handleRegistrationFlow above). Everything under
+// /admin is gated by HTTP Basic Auth (checkAdminAuth below); set
+// ADMIN_USERNAME and ADMIN_PASSWORD in .env before deploying, or the whole
+// surface stays locked (fails closed).
+function checkAdminAuth(req, res, next) {
+  if (!ADMIN_USERNAME || !ADMIN_PASSWORD) {
+    return res.status(503).send('Admin dashboard is not configured. Set ADMIN_USERNAME and ADMIN_PASSWORD in your .env file, then restart the server.');
+  }
+
+  const header = req.headers.authorization || '';
+  const [scheme, encoded] = header.split(' ');
+
+  if (scheme !== 'Basic' || !encoded) {
+    res.set('WWW-Authenticate', 'Basic realm="Foodie Admin"');
+    return res.status(401).send('Authentication required.');
+  }
+
+  let user = '';
+  let pass = '';
+  try {
+    const decoded = Buffer.from(encoded, 'base64').toString('utf8');
+    const sepIndex = decoded.indexOf(':');
+    user = sepIndex === -1 ? decoded : decoded.slice(0, sepIndex);
+    pass = sepIndex === -1 ? '' : decoded.slice(sepIndex + 1);
+  } catch (error) {
+    res.set('WWW-Authenticate', 'Basic realm="Foodie Admin"');
+    return res.status(401).send('Malformed credentials.');
+  }
+
+  // Constant-time comparisons so a mistyped password can't be brute-forced
+  // via response-time differences. Buffers must be equal length for
+  // timingSafeEqual, so a length mismatch is checked (and short-circuited)
+  // separately first.
+  const userBuf = Buffer.from(user);
+  const adminUserBuf = Buffer.from(ADMIN_USERNAME);
+  const passBuf = Buffer.from(pass);
+  const adminPassBuf = Buffer.from(ADMIN_PASSWORD);
+
+  const userMatches = userBuf.length === adminUserBuf.length && crypto.timingSafeEqual(userBuf, adminUserBuf);
+  const passMatches = passBuf.length === adminPassBuf.length && crypto.timingSafeEqual(passBuf, adminPassBuf);
+
+  if (!userMatches || !passMatches) {
+    res.set('WWW-Authenticate', 'Basic realm="Foodie Admin"');
+    return res.status(401).send('Invalid credentials.');
+  }
+
+  next();
+}
+
+// Serves public/admin/index.html (the Add Vendor form) at /admin/ — the
+// browser will prompt for the Basic Auth credentials automatically since
+// checkAdminAuth runs first and returns 401 with a WWW-Authenticate header.
+app.use('/admin', checkAdminAuth, express.static(path.join(__dirname, 'public/admin')));
+
+// Creates (or updates, if the WhatsApp number already exists) a vendor row
+// directly — NOT via lib/order-dispatch.js's upsertVendor, since that
+// function's shape is built around the WhatsApp-driven "name + menu text"
+// registration flow this feature replaces. This upsert instead matches the
+// admin form's fields one-to-one. Requires the extra vendor columns added
+// in migrations/003_admin_vendor_fields.sql — see that file for the exact
+// `alter table` statements (contact_name, email, address, latitude,
+// longitude, opening_hours).
+//
+// The vendor still won't show up to customers in the ordering flow until
+// they set a menu — getRegisteredVendors() filters on `menu is not null`.
+// Once notified below, the vendor can message the bot and reply "edit menu"
+// to add one (handleVendorMenuCommands recognizes them because a vendor row
+// with their phone number now exists).
+app.post('/admin/api/vendors', checkAdminAuth, async (req, res) => {
+  if (!supabase) {
+    return res.status(503).json({ error: 'Supabase is not configured on this server (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY missing) — cannot save vendors.' });
+  }
+
+  const body = req.body || {};
+  const contactName = (body.contactName || '').trim();
+  const restaurantName = (body.restaurantName || '').trim();
+  const whatsappNumber = (body.whatsappNumber || '').trim();
+  const email = (body.email || '').trim();
+  const address = (body.address || '').trim();
+  const openingHours = (body.openingHours || '').trim();
+  const status = (body.status || 'active').trim().toLowerCase();
+  const latitudeRaw = body.latitude;
+  const longitudeRaw = body.longitude;
+
+  const missing = [];
+  if (!contactName) missing.push('Vendor Name');
+  if (!restaurantName) missing.push('Restaurant Name');
+  if (!whatsappNumber) missing.push('WhatsApp Number');
+  if (!address) missing.push('Address');
+  if (!openingHours) missing.push('Opening Hours');
+  if (missing.length > 0) {
+    return res.status(400).json({ error: `Missing required field(s): ${missing.join(', ')}` });
+  }
+
+  const normalizedPhone = normalizePhone(whatsappNumber);
+  if (!normalizedPhone || normalizedPhone.length < 10) {
+    return res.status(400).json({ error: 'WhatsApp Number does not look valid — include the country code, e.g. 2348012345678.' });
+  }
+
+  if (email && !parseEmail(email)) {
+    return res.status(400).json({ error: 'Email address does not look valid.' });
+  }
+
+  if (status !== 'active' && status !== 'inactive') {
+    return res.status(400).json({ error: 'Status must be "active" or "inactive".' });
+  }
+
+  let latitude = null;
+  let longitude = null;
+  if (latitudeRaw !== undefined && latitudeRaw !== null && String(latitudeRaw).trim() !== '') {
+    latitude = Number(latitudeRaw);
+    if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90) {
+      return res.status(400).json({ error: 'GPS latitude must be a number between -90 and 90.' });
+    }
+  }
+  if (longitudeRaw !== undefined && longitudeRaw !== null && String(longitudeRaw).trim() !== '') {
+    longitude = Number(longitudeRaw);
+    if (!Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
+      return res.status(400).json({ error: 'GPS longitude must be a number between -180 and 180.' });
+    }
+  }
+
+  const isActive = status === 'active';
+
+  const vendorPayload = {
+    phone: normalizedPhone,
+    name: restaurantName,
+    contact_name: contactName,
+    email: email || null,
+    address,
+    // `vicinity` is what the existing order-notification code (e.g. the
+    // rider pickup message in handleDispatchPayload) reads first, falling
+    // back to `address` — keep both populated so either lookup works.
+    vicinity: address,
+    latitude,
+    longitude,
+    opening_hours: openingHours,
+    is_active: isActive,
+    is_open: isActive,
+    updated_at: new Date().toISOString()
+  };
+
+  let vendor;
+  try {
+    const { data, error } = await supabase
+      .from('vendors')
+      .upsert(vendorPayload, { onConflict: 'phone' })
+      .select()
+      .maybeSingle();
+    if (error) throw error;
+    vendor = data;
+  } catch (error) {
+    console.error('Admin: failed to save vendor:', error.message || error);
+    return res.status(500).json({
+      error: `Could not save vendor: ${error.message || error}. If this mentions a missing column, run migrations/003_admin_vendor_fields.sql against your Supabase project.`
+    });
+  }
+
+  // Notify the vendor on WhatsApp. IMPORTANT: WhatsApp's Business API only
+  // delivers free-form messages (like this one) to a number that has
+  // messaged the bot within the last 24 hours, or via an approved message
+  // template otherwise (see the 24h-window comment on sendWhatsAppMessage's
+  // error handling below). A brand-new vendor who has never messaged the
+  // bot will likely NOT receive this — check server logs for a WhatsApp
+  // error code 131047/131026 if that happens, and consider setting up an
+  // approved template for vendor welcome messages instead.
+  try {
+    await sendWhatsAppMessage(normalizedPhone, {
+      type: 'text',
+      body: `Welcome to Foodie! Your restaurant has been added to our platform. You can now start receiving orders.`
+    });
+  } catch (error) {
+    console.error('Admin: WhatsApp welcome message threw unexpectedly:', error.message || error);
+  }
+
+  return res.status(200).json({ vendor });
+});
+
+// Lists vendors for the admin dashboard table (most recently updated first).
+app.get('/admin/api/vendors', checkAdminAuth, async (req, res) => {
+  if (!supabase) {
+    return res.status(503).json({ error: 'Supabase is not configured on this server.' });
+  }
+
+  const { data, error } = await supabase
+    .from('vendors')
+    .select('*')
+    .order('updated_at', { ascending: false });
+
+  if (error) {
+    console.error('Admin: failed to list vendors:', error.message);
+    return res.status(500).json({ error: error.message });
+  }
+
+  return res.status(200).json({ vendors: data || [] });
+});
+
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
@@ -2054,6 +2268,10 @@ async function askGrok(userMessage, sessionData = {}, { creative = false } = {})
 const STATIC_GREETING = `Hi! I'm *Foodie* — your personal Nigerian food guide. Tell me you're hungry and I'll handle the rest!`;
 
 // Buttons shown to new users so they can register or order with a tap.
+// NOTE: there is deliberately no "Register vendor" button anymore — vendors
+// are onboarded exclusively through the admin dashboard (see the /admin
+// routes near the bottom of this file). Public self-registration for
+// vendors has been removed; only driver self-registration remains.
 function getNewUserButtonsReply(bodyText = 'Get started with Foodie:') {
   return {
     type: 'interactive',
@@ -2062,7 +2280,6 @@ function getNewUserButtonsReply(bodyText = 'Get started with Foodie:') {
       body: { text: bodyText },
       action: {
         buttons: [
-          { type: 'reply', reply: { id: 'register_vendor', title: 'Register vendor' } },
           { type: 'reply', reply: { id: 'register_driver', title: 'Register driver' } },
           { type: 'reply', reply: { id: 'order_now', title: 'Order now' } }
         ]
