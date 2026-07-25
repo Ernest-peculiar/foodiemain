@@ -55,7 +55,8 @@
   input[type="email"],
   input[type="tel"],
   input[type="number"],
-  select {
+  select,
+  textarea {
     width: 100%;
     padding: 10px 12px;
     border: 1px solid #ddd;
@@ -63,7 +64,11 @@
     font-size: 14px;
     font-family: inherit;
   }
-  input:focus, select:focus {
+  textarea {
+    resize: vertical;
+    line-height: 1.5;
+  }
+  input:focus, select:focus, textarea:focus {
     outline: none;
     border-color: #FFC72C;
   }
@@ -182,6 +187,10 @@
         </div>
       </div>
 
+      <label for="menu">Restaurant Menu <span class="optional">(optional)</span></label>
+      <textarea id="menu" name="menu" rows="6" placeholder="One item per line, with a price:&#10;Rice &amp; Beans - 1500&#10;Egusi Soup - 1800&#10;Chicken Sandwich - 1200"></textarea>
+      <div class="hint">Every line needs a price (e.g. "Item name - 1500"). Leave blank to add the menu later — the restaurant just won't show up to customers until it has one. Once added, the vendor can manage it themselves on WhatsApp by replying "menu" or "edit menu".</div>
+
       <label for="openingHours">Opening Hours</label>
       <input type="text" id="openingHours" name="openingHours" placeholder="e.g. Mon-Sat 9am-9pm" required />
 
@@ -266,6 +275,7 @@
       address: document.getElementById('address').value.trim(),
       latitude: document.getElementById('latitude').value.trim(),
       longitude: document.getElementById('longitude').value.trim(),
+      menu: document.getElementById('menu').value.trim(),
       openingHours: document.getElementById('openingHours').value.trim(),
       status: document.getElementById('status').value
     };
@@ -279,7 +289,10 @@
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to add vendor');
 
-      showMessage('✅ Vendor added and notified on WhatsApp.', false);
+      const menuNote = data.menuItemCount > 0
+        ? ` Menu (${data.menuItemCount} item${data.menuItemCount === 1 ? '' : 's'}) is live.`
+        : ' No menu added yet — the restaurant won\'t appear to customers until one is added.';
+      showMessage('✅ Vendor added and notified on WhatsApp.' + menuNote, false);
       form.reset();
       document.getElementById('status').value = 'active';
       loadVendors();

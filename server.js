@@ -1450,6 +1450,10 @@ app.post('/admin/api/vendors', checkAdminAuth, async (req, res) => {
   const status = (body.status || 'active').trim().toLowerCase();
   const latitudeRaw = body.latitude;
   const longitudeRaw = body.longitude;
+  // Menu is optional at onboarding time — a vendor added without one just
+  // won't appear to customers yet (getRegisteredVendors() filters on
+  // `menu is not null`) until they or an admin add one later.
+  const menuText = (body.menu || '').trim();
 
   const missing = [];
   if (!contactName) missing.push('Vendor Name');
@@ -1491,6 +1495,27 @@ app.post('/admin/api/vendors', checkAdminAuth, async (req, res) => {
 
   const isActive = status === 'active';
 
+  // If a menu was supplied, parse it with the same parseVendorMenu() used
+  // by the WhatsApp "edit menu" flow, so it produces the exact same
+  // { id, title, name, description, price, available } shape and the
+  // vendor can manage it (reply "menu" / "edit menu") from WhatsApp
+  // afterwards exactly like a self-registered vendor.
+  //
+  // Prices are required per line, same rule the WhatsApp flow enforces in
+  // finalizeRegistration — a menu item with no price can never be ordered
+  // (handleOrderAwaitAddress blocks payment on price <= 0), so catching a
+  // missing price here avoids silently onboarding an unorderable menu.
+  let menuItems = [];
+  if (menuText) {
+    const existingVendor = await getVendorRecordByPhone(normalizedPhone);
+    const existingItems = existingVendor?.menu_items || [];
+    menuItems = parseVendorMenu(menuText, existingItems);
+    const allHavePrices = menuItems.length > 0 && menuItems.every((it) => it.price !== null);
+    if (!allHavePrices) {
+      return res.status(400).json({ error: 'Please include a price for every menu item, one per line, e.g. "Rice & Beans - 1500".' });
+    }
+  }
+
   const vendorPayload = {
     phone: normalizedPhone,
     name: restaurantName,
@@ -1509,6 +1534,15 @@ app.post('/admin/api/vendors', checkAdminAuth, async (req, res) => {
     updated_at: new Date().toISOString()
   };
 
+  // Only touch `menu`/`menu_items` if a menu was actually submitted — an
+  // empty menuText here means "leave whatever menu this vendor already has
+  // alone" (e.g. editing an existing vendor's hours without wiping their
+  // menu), rather than clearing it out.
+  if (menuText) {
+    vendorPayload.menu = menuText;
+    vendorPayload.menu_items = menuItems;
+  }
+
   let vendor;
   try {
     const { data, error } = await supabase
@@ -1525,7 +1559,8 @@ app.post('/admin/api/vendors', checkAdminAuth, async (req, res) => {
     });
   }
 
-  // Notify the vendor on WhatsApp. IMPORTANT: WhatsApp's Business API only
+  // Notify the vendor on WhatsApp — this is the confirmation that
+  // onboarding is complete. IMPORTANT: WhatsApp's Business API only
   // delivers free-form messages (like this one) to a number that has
   // messaged the bot within the last 24 hours, or via an approved message
   // template otherwise (see the 24h-window comment on sendWhatsAppMessage's
@@ -1538,11 +1573,22 @@ app.post('/admin/api/vendors', checkAdminAuth, async (req, res) => {
       type: 'text',
       body: `Welcome to Foodie! Your restaurant has been added to our platform. You can now start receiving orders.`
     });
+
+    // Second message confirming what's actually orderable right now, only
+    // sent when a menu was part of this submission — keeps the base welcome
+    // text exactly as specified, with menu confirmation as a follow-up.
+    if (menuText && menuItems.length > 0) {
+      const menuSummary = menuItems.map((it) => `• ${it.title}${it.price ? ` — ₦${it.price}` : ''}`).join('\n');
+      await sendWhatsAppMessage(normalizedPhone, {
+        type: 'text',
+        body: `🍽️ Your menu (${menuItems.length} item${menuItems.length === 1 ? '' : 's'}) is live and customers can order from it now:\n\n${menuSummary}\n\nReply "menu" any time to mark items sold out, or "edit menu" to update the whole list.`
+      });
+    }
   } catch (error) {
     console.error('Admin: WhatsApp welcome message threw unexpectedly:', error.message || error);
   }
 
-  return res.status(200).json({ vendor });
+  return res.status(200).json({ vendor, menuItemCount: menuItems.length });
 });
 
 // Lists vendors for the admin dashboard table (most recently updated first).
