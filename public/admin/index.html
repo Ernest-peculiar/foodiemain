@@ -100,6 +100,19 @@
     background: #9db8a4;
     cursor: not-allowed;
   }
+  /* Secondary "Verify" button next to the account number field — smaller,
+     inline, and not full-width like the main submit button. */
+  button.secondary {
+    margin-top: 0;
+    width: auto;
+    flex: 0 0 auto;
+    background: #222;
+    padding: 10px 16px;
+    font-size: 13px;
+  }
+  button.secondary:disabled {
+    background: #999;
+  }
   #message {
     margin-top: 14px;
     padding: 10px 12px;
@@ -187,6 +200,29 @@
         </div>
       </div>
 
+      <!-- Payout details: where the money from paid orders gets sent for
+           this vendor. Verified against Paystack's bank/resolve endpoint
+           before the vendor can be saved, so a mistyped account number is
+           caught up front rather than discovered after money moves. -->
+      <label for="bankSelect">Payout Bank</label>
+      <select id="bankSelect" name="bankSelect" required>
+        <option value="">Loading banks…</option>
+      </select>
+
+      <label for="accountNumber">Account Number</label>
+      <div class="row">
+        <div>
+          <input type="text" id="accountNumber" name="accountNumber" placeholder="10-digit account number" maxlength="10" inputmode="numeric" required />
+        </div>
+        <div style="flex: 0 0 auto;">
+          <button type="button" class="secondary" id="verifyAccountBtn">Verify</button>
+        </div>
+      </div>
+      <div class="hint" id="accountVerifyHint">This is the account customer payments for this vendor's food will be paid out to. It must be verified before the vendor can be added.</div>
+      <input type="hidden" id="accountName" name="accountName" />
+      <input type="hidden" id="bankCode" name="bankCode" />
+      <input type="hidden" id="bankName" name="bankName" />
+
       <label for="menu">Restaurant Menu <span class="optional">(optional)</span></label>
       <textarea id="menu" name="menu" rows="6" placeholder="One item per line, with a price:&#10;Rice &amp; Beans - 1500&#10;Egusi Soup - 1800&#10;Chicken Sandwich - 1200"></textarea>
       <div class="hint">Every line needs a price (e.g. "Item name - 1500"). Leave blank to add the menu later — the restaurant just won't show up to customers until it has one. Once added, the vendor can manage it themselves on WhatsApp by replying "menu" or "edit menu".</div>
@@ -217,9 +253,24 @@
   const submitBtn = document.getElementById('submitBtn');
   const vendorListWrap = document.getElementById('vendorListWrap');
 
+  // Payout / bank verification elements
+  const bankSelect = document.getElementById('bankSelect');
+  const accountNumberInput = document.getElementById('accountNumber');
+  const verifyAccountBtn = document.getElementById('verifyAccountBtn');
+  const accountVerifyHint = document.getElementById('accountVerifyHint');
+  const accountNameHidden = document.getElementById('accountName');
+  const bankCodeHidden = document.getElementById('bankCode');
+  const bankNameHidden = document.getElementById('bankName');
+
   function showMessage(text, isError) {
     messageEl.textContent = text;
     messageEl.className = isError ? 'error' : 'success';
+  }
+
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str == null ? '' : String(str);
+    return div.innerHTML;
   }
 
   async function loadVendors() {
@@ -233,12 +284,6 @@
     }
   }
 
-  function escapeHtml(str) {
-    const div = document.createElement('div');
-    div.textContent = str == null ? '' : String(str);
-    return div.innerHTML;
-  }
-
   function renderVendors(vendors) {
     if (!vendors.length) {
       vendorListWrap.innerHTML = '<p class="empty">No vendors added yet.</p>';
@@ -247,23 +292,105 @@
     const rows = vendors.map((v) => {
       const isActive = (v.is_active ?? v.isActive ?? true) !== false;
       const hasMenu = !!v.menu;
+      // Payout column: show bank + last 4 digits of account number only
+      // (never the full number) so this table can't casually leak the
+      // whole account number to anyone glancing at the admin screen.
+      const payoutCell = v.account_number
+        ? escapeHtml(v.bank_name || '') + '<br><span style="color:#888">••••' + escapeHtml(String(v.account_number).slice(-4)) + '</span>'
+        : '<span class="empty">Not set</span>';
       return '<tr>'
         + '<td>' + escapeHtml(v.name) + '<br><span style="color:#888">' + escapeHtml(v.contact_name || '') + '</span></td>'
         + '<td>' + escapeHtml(v.phone) + '</td>'
         + '<td>' + escapeHtml(v.address || v.vicinity || '') + '</td>'
         + '<td>' + escapeHtml(v.opening_hours || '') + '</td>'
+        + '<td>' + payoutCell + '</td>'
         + '<td><span class="badge ' + (isActive ? 'active' : 'inactive') + '">' + (isActive ? 'Active' : 'Inactive') + '</span></td>'
         + '<td>' + (hasMenu ? 'Yes' : 'Not yet') + '</td>'
         + '</tr>';
     }).join('');
     vendorListWrap.innerHTML = '<table><thead><tr>'
-      + '<th>Restaurant</th><th>WhatsApp</th><th>Address</th><th>Hours</th><th>Status</th><th>Menu on file</th>'
+      + '<th>Restaurant</th><th>WhatsApp</th><th>Address</th><th>Hours</th><th>Payout</th><th>Status</th><th>Menu on file</th>'
       + '</tr></thead><tbody>' + rows + '</tbody></table>';
   }
+
+  // --- Bank list + account verification ------------------------------------
+
+  async function loadBanks() {
+    try {
+      const res = await fetch('/admin/api/banks');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load banks');
+      bankSelect.innerHTML = '<option value="">Select bank…</option>'
+        + data.banks.map((b) => `<option value="${escapeHtml(b.code)}">${escapeHtml(b.name)}</option>`).join('');
+    } catch (err) {
+      bankSelect.innerHTML = '<option value="">Could not load banks</option>';
+    }
+  }
+
+  // Any change to bank or account number invalidates a prior verification —
+  // force a fresh "Verify" click rather than letting a stale accountName
+  // slip through attached to a now-different bank/account combo.
+  function resetVerification() {
+    accountNameHidden.value = '';
+    bankCodeHidden.value = '';
+    bankNameHidden.value = '';
+    accountVerifyHint.textContent = "This is the account customer payments for this vendor's food will be paid out to. It must be verified before the vendor can be added.";
+    accountVerifyHint.style.color = '#888';
+  }
+  bankSelect.addEventListener('change', resetVerification);
+  accountNumberInput.addEventListener('input', resetVerification);
+
+  verifyAccountBtn.addEventListener('click', async () => {
+    const bankCode = bankSelect.value;
+    const accountNumber = accountNumberInput.value.trim();
+
+    if (!bankCode) {
+      accountVerifyHint.textContent = 'Select a bank first.';
+      accountVerifyHint.style.color = '#b3261e';
+      return;
+    }
+    if (!/^\d{10}$/.test(accountNumber)) {
+      accountVerifyHint.textContent = 'Account number must be 10 digits.';
+      accountVerifyHint.style.color = '#b3261e';
+      return;
+    }
+
+    verifyAccountBtn.disabled = true;
+    verifyAccountBtn.textContent = 'Verifying…';
+    try {
+      const res = await fetch('/admin/api/verify-account', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bankCode, accountNumber })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Verification failed');
+
+      accountNameHidden.value = data.accountName;
+      bankCodeHidden.value = bankCode;
+      bankNameHidden.value = bankSelect.options[bankSelect.selectedIndex].text;
+      accountVerifyHint.textContent = '✅ Verified: ' + data.accountName;
+      accountVerifyHint.style.color = '#1a7f37';
+    } catch (err) {
+      accountVerifyHint.textContent = '❌ ' + err.message;
+      accountVerifyHint.style.color = '#b3261e';
+    } finally {
+      verifyAccountBtn.disabled = false;
+      verifyAccountBtn.textContent = 'Verify';
+    }
+  });
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     messageEl.className = '';
+
+    // Block submission until the payout account has actually been verified
+    // for the current bank + account number on the form.
+    if (!accountNameHidden.value) {
+      showMessage("❌ Please verify the vendor's bank account before submitting.", true);
+      return;
+    }
+
     submitBtn.disabled = true;
     submitBtn.textContent = 'Adding…';
 
@@ -275,6 +402,10 @@
       address: document.getElementById('address').value.trim(),
       latitude: document.getElementById('latitude').value.trim(),
       longitude: document.getElementById('longitude').value.trim(),
+      bankCode: bankCodeHidden.value,
+      bankName: bankNameHidden.value,
+      accountNumber: accountNumberInput.value.trim(),
+      accountName: accountNameHidden.value,
       menu: document.getElementById('menu').value.trim(),
       openingHours: document.getElementById('openingHours').value.trim(),
       status: document.getElementById('status').value
@@ -295,6 +426,7 @@
       showMessage('✅ Vendor added and notified on WhatsApp.' + menuNote, false);
       form.reset();
       document.getElementById('status').value = 'active';
+      resetVerification();
       loadVendors();
     } catch (err) {
       showMessage('❌ ' + err.message, true);
@@ -304,6 +436,7 @@
     }
   });
 
+  loadBanks();
   loadVendors();
 </script>
 </body>

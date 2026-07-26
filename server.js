@@ -1421,20 +1421,105 @@ function checkAdminAuth(req, res, next) {
 // checkAdminAuth runs first and returns 401 with a WWW-Authenticate header.
 app.use('/admin', checkAdminAuth, express.static(path.join(__dirname, 'public/admin')));
 
+// --- Paystack bank list + account resolution (for vendor payout setup) ----
+// Used by the admin "Add Vendor" form to let staff pick the vendor's payout
+// bank from a real list and verify the account number/name combo against
+// Paystack BEFORE it's saved — this is how we catch a mistyped account
+// number at data-entry time instead of discovering it later when money
+// doesn't land where it should.
+let bankListCache = null;
+let bankListCacheAt = 0;
+const BANK_LIST_TTL_MS = 24 * 60 * 60 * 1000; // 24h — Paystack's NGN bank list barely changes.
+
+async function fetchPaystackBanks() {
+  if (bankListCache && (Date.now() - bankListCacheAt) < BANK_LIST_TTL_MS) {
+    return bankListCache;
+  }
+  if (!PAYSTACK_SECRET_KEY) {
+    throw new Error('PAYSTACK_SECRET_KEY is not configured — cannot fetch bank list.');
+  }
+
+  const response = await fetch('https://api.paystack.co/bank?country=nigeria&currency=NGN', {
+    headers: { Authorization: `Bearer ${PAYSTACK_SECRET_KEY}` }
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok || !data?.status) {
+    throw new Error(data?.message || `Paystack bank list request failed (${response.status})`);
+  }
+
+  bankListCache = data.data.map((b) => ({ name: b.name, code: b.code }));
+  bankListCacheAt = Date.now();
+  return bankListCache;
+}
+
+app.get('/admin/api/banks', checkAdminAuth, async (req, res) => {
+  try {
+    const banks = await fetchPaystackBanks();
+    return res.status(200).json({ banks });
+  } catch (error) {
+    console.error('Admin: failed to fetch bank list:', error.message || error);
+    return res.status(502).json({ error: 'Could not load bank list from Paystack. Check PAYSTACK_SECRET_KEY.' });
+  }
+});
+
+// Resolves an account number against a bank code via Paystack, returning the
+// actual account holder name on file with the bank. This is what lets the
+// admin form confirm "yes, this account number really belongs to this
+// person" before it's saved on the vendor record as a payout destination.
+app.post('/admin/api/verify-account', checkAdminAuth, async (req, res) => {
+  const accountNumber = (req.body?.accountNumber || '').trim();
+  const bankCode = (req.body?.bankCode || '').trim();
+
+  if (!accountNumber || !/^\d{10}$/.test(accountNumber)) {
+    return res.status(400).json({ error: 'Account number must be 10 digits.' });
+  }
+  if (!bankCode) {
+    return res.status(400).json({ error: 'Please select a bank.' });
+  }
+  if (!PAYSTACK_SECRET_KEY) {
+    return res.status(503).json({ error: 'PAYSTACK_SECRET_KEY is not configured on this server.' });
+  }
+
+  try {
+    const url = `https://api.paystack.co/bank/resolve?account_number=${encodeURIComponent(accountNumber)}&bank_code=${encodeURIComponent(bankCode)}`;
+    const response = await fetch(url, { headers: { Authorization: `Bearer ${PAYSTACK_SECRET_KEY}` } });
+    const data = await response.json().catch(() => null);
+
+    if (!response.ok || !data?.status) {
+      return res.status(400).json({ error: data?.message || 'Could not verify that account number — double-check it and the bank.' });
+    }
+
+    return res.status(200).json({ accountName: data.data.account_name, accountNumber: data.data.account_number });
+  } catch (error) {
+    console.error('Admin: account verification failed:', error.message || error);
+    return res.status(502).json({ error: 'Account verification failed — please try again.' });
+  }
+});
+
 // Creates (or updates, if the WhatsApp number already exists) a vendor row
 // directly — NOT via lib/order-dispatch.js's upsertVendor, since that
 // function's shape is built around the WhatsApp-driven "name + menu text"
 // registration flow this feature replaces. This upsert instead matches the
 // admin form's fields one-to-one. Requires the extra vendor columns added
-// in migrations/003_admin_vendor_fields.sql — see that file for the exact
-// `alter table` statements (contact_name, email, address, latitude,
-// longitude, opening_hours).
+// in migrations/003_admin_vendor_fields.sql (contact_name, email, address,
+// latitude, longitude, opening_hours) and migrations/004_vendor_payout_fields.sql
+// (bank_code, bank_name, account_number, account_name) — see those files for
+// the exact `alter table` statements.
 //
 // The vendor still won't show up to customers in the ordering flow until
 // they set a menu — getRegisteredVendors() filters on `menu is not null`.
 // Once notified below, the vendor can message the bot and reply "edit menu"
 // to add one (handleVendorMenuCommands recognizes them because a vendor row
 // with their phone number now exists).
+//
+// PAYOUT ACCOUNT: bank_code/account_number/account_name are the destination
+// the vendor's share of order payments should be sent to. Note this route
+// only STORES that destination — it doesn't itself move any money. Right
+// now every customer payment lands in the platform's own Paystack balance
+// (see handlePaystackChargeSuccess below); actually paying vendors out
+// against these stored details would be a separate integration (e.g.
+// Paystack Transfer Recipients + Transfers, or subaccount splits at
+// transaction-initialize time).
 app.post('/admin/api/vendors', checkAdminAuth, async (req, res) => {
   if (!supabase) {
     return res.status(503).json({ error: 'Supabase is not configured on this server (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY missing) — cannot save vendors.' });
@@ -1450,6 +1535,15 @@ app.post('/admin/api/vendors', checkAdminAuth, async (req, res) => {
   const status = (body.status || 'active').trim().toLowerCase();
   const latitudeRaw = body.latitude;
   const longitudeRaw = body.longitude;
+  // Payout destination — where this vendor's share of order payments should
+  // go. bankName/accountName are trusted as returned by the admin form's own
+  // "Verify" step (bank/resolve), not re-verified here; accountNumber and
+  // bankCode ARE re-validated below since those two are what actually matter
+  // for correctness (bankName/accountName are just display/record labels).
+  const bankCode = (body.bankCode || '').trim();
+  const bankName = (body.bankName || '').trim();
+  const accountNumber = (body.accountNumber || '').trim();
+  const accountName = (body.accountName || '').trim();
   // Menu is optional at onboarding time — a vendor added without one just
   // won't appear to customers yet (getRegisteredVendors() filters on
   // `menu is not null`) until they or an admin add one later.
@@ -1461,6 +1555,9 @@ app.post('/admin/api/vendors', checkAdminAuth, async (req, res) => {
   if (!whatsappNumber) missing.push('WhatsApp Number');
   if (!address) missing.push('Address');
   if (!openingHours) missing.push('Opening Hours');
+  if (!bankCode) missing.push('Payout Bank');
+  if (!accountNumber) missing.push('Account Number');
+  if (!accountName) missing.push('Verified Account Name');
   if (missing.length > 0) {
     return res.status(400).json({ error: `Missing required field(s): ${missing.join(', ')}` });
   }
@@ -1476,6 +1573,10 @@ app.post('/admin/api/vendors', checkAdminAuth, async (req, res) => {
 
   if (status !== 'active' && status !== 'inactive') {
     return res.status(400).json({ error: 'Status must be "active" or "inactive".' });
+  }
+
+  if (!/^\d{10}$/.test(accountNumber)) {
+    return res.status(400).json({ error: 'Account Number must be exactly 10 digits.' });
   }
 
   let latitude = null;
@@ -1529,6 +1630,10 @@ app.post('/admin/api/vendors', checkAdminAuth, async (req, res) => {
     latitude,
     longitude,
     opening_hours: openingHours,
+    bank_code: bankCode,
+    bank_name: bankName || null,
+    account_number: accountNumber,
+    account_name: accountName,
     is_active: isActive,
     is_open: isActive,
     updated_at: new Date().toISOString()
@@ -1555,7 +1660,7 @@ app.post('/admin/api/vendors', checkAdminAuth, async (req, res) => {
   } catch (error) {
     console.error('Admin: failed to save vendor:', error.message || error);
     return res.status(500).json({
-      error: `Could not save vendor: ${error.message || error}. If this mentions a missing column, run migrations/003_admin_vendor_fields.sql against your Supabase project.`
+      error: `Could not save vendor: ${error.message || error}. If this mentions a missing column, run migrations/003_admin_vendor_fields.sql and migrations/004_vendor_payout_fields.sql against your Supabase project.`
     });
   }
 
@@ -1978,6 +2083,15 @@ function buildReceiptText({ orderId, vendorName, itemTitle, qty, unitPrice, tota
 // fall back to matching on `id` whenever the `paystack_reference` lookup
 // comes back empty. This makes a failed secondary write non-fatal instead
 // of silently orphaning a paid order.
+//
+// PAYOUT NOTE: this function currently only marks the order paid and sends
+// receipts/notifications — it does NOT move any money to the vendor's
+// stored bank account (vendors.bank_code/account_number/account_name, set
+// via the admin dashboard). Every customer payment lands in the platform's
+// own Paystack balance. If/when automatic vendor payouts are added, that
+// logic (e.g. a Paystack Transfer to a Transfer Recipient built from the
+// vendor's stored account details) would be triggered from here, once the
+// order is confirmed paid.
 async function handlePaystackChargeSuccess(data) {
   const reference = data?.reference;
   console.log(`→ handlePaystackChargeSuccess called with reference=${reference}`);
@@ -3529,6 +3643,12 @@ const REQUIRED_ORDER_COLUMNS = [
   'delivery_address', 'driver_id', 'delivery_photo_url', 'customer_confirmed_at'
 ];
 
+// Columns the payout feature depends on. Checked separately (as a warning,
+// not a hard failure) since a missing payout column shouldn't block the bot
+// from starting — it should just block admin vendor creation with a clear
+// error, which the /admin/api/vendors route already surfaces.
+const REQUIRED_VENDOR_PAYOUT_COLUMNS = ['bank_code', 'bank_name', 'account_number', 'account_name'];
+
 async function verifyOrdersSchema() {
   if (!supabase) return; // already warned above about missing Supabase config
 
@@ -3564,7 +3684,43 @@ async function verifyOrdersSchema() {
   }
 }
 
+// Same idea as verifyOrdersSchema, but for the vendor payout columns added
+// in migrations/004_vendor_payout_fields.sql. Missing columns here would
+// otherwise surface as a confusing PostgREST error the first time someone
+// uses the admin dashboard, instead of a clear message at boot.
+async function verifyVendorPayoutSchema() {
+  if (!supabase) return;
+
+  const { data, error } = await supabase
+    .from('information_schema.columns')
+    .select('column_name')
+    .eq('table_schema', 'public')
+    .eq('table_name', 'vendors');
+
+  if (error) {
+    console.warn(`⚠️  Could not verify the vendors table schema at startup (${error.message}). Skipping self-check.`);
+    return;
+  }
+
+  const existingColumns = new Set((data || []).map((row) => row.column_name));
+  const missing = REQUIRED_VENDOR_PAYOUT_COLUMNS.filter((col) => !existingColumns.has(col));
+
+  if (missing.length > 0) {
+    console.error('');
+    console.error('🔴 STARTUP CHECK: vendors table is missing payout columns 🔴');
+    console.error(`   Missing: ${missing.join(', ')}`);
+    console.error('   The admin "Add Vendor" form will fail to save a vendor\'s payout bank');
+    console.error('   details until this is fixed.');
+    console.error('   Fix: run migrations/004_vendor_payout_fields.sql against this Supabase');
+    console.error('   project, then restart this server.');
+    console.error('');
+  } else {
+    console.log('✅ Startup check: vendors table has all required payout columns.');
+  }
+}
+
 app.listen(PORT, () => {
   console.log(`Foodie WhatsApp bot running on port ${PORT}`);
   verifyOrdersSchema();
+  verifyVendorPayoutSchema();
 });
