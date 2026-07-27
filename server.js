@@ -2514,7 +2514,7 @@ function getNewUserButtonsReply(bodyText = 'Get started with Foodie:') {
       body: { text: bodyText },
       action: {
         buttons: [
-          { type: 'reply', reply: { id: 'register_driver', title: 'Register driver' } },
+          { type: 'reply', reply: { id: 'register_driver', title: 'Register as a driver' } },
           { type: 'reply', reply: { id: 'order_now', title: 'Order now' } }
         ]
       }
