@@ -41,6 +41,56 @@
     font-size: 16px;
     margin: 0 0 16px;
   }
+  /* --- Stats dashboard -------------------------------------------------- */
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+  .stat-card {
+    background: #fff;
+    border-radius: 14px;
+    padding: 16px 18px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    min-width: 0;
+  }
+  .stat-card .stat-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: #888;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .stat-card .stat-value {
+    font-size: 22px;
+    font-weight: 700;
+    color: #222;
+    margin-top: 6px;
+    line-height: 1.15;
+    word-break: break-word;
+  }
+  .stat-card .stat-sub {
+    font-size: 12px;
+    color: #888;
+    margin-top: 2px;
+  }
+  .live-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #1a7f37;
+    display: inline-block;
+    flex: 0 0 auto;
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+  }
   label {
     display: block;
     font-size: 13px;
@@ -162,6 +212,70 @@
     color: #888;
     font-size: 13px;
   }
+  .table-scroll {
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* --- Mobile responsiveness -------------------------------------------- */
+  @media (max-width: 640px) {
+    header {
+      padding: 16px;
+    }
+    header h1 {
+      font-size: 18px;
+    }
+    header p {
+      font-size: 12px;
+    }
+    main {
+      padding: 14px;
+    }
+    .card {
+      padding: 16px;
+      border-radius: 12px;
+      margin-bottom: 16px;
+    }
+    .stats-grid {
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+    }
+    .stat-card {
+      padding: 12px 14px;
+    }
+    .stat-card .stat-value {
+      font-size: 18px;
+    }
+    /* GPS coordinates row stacks on narrow screens */
+    .row.stack-mobile {
+      flex-direction: column;
+      gap: 0;
+    }
+    /* Account number + Verify button: keep on one line but let the button
+       shrink to content so it doesn't force horizontal overflow. */
+    .row.account-row {
+      flex-wrap: nowrap;
+      gap: 8px;
+    }
+    .row.account-row button.secondary {
+      padding: 10px 12px;
+      font-size: 12px;
+    }
+    table {
+      font-size: 12px;
+    }
+    th, td {
+      padding: 6px 8px;
+      white-space: nowrap;
+    }
+  }
+
+  @media (max-width: 400px) {
+    .stats-grid {
+      grid-template-columns: 1fr 1fr;
+    }
+  }
 </style>
 </head>
 <body>
@@ -171,6 +285,24 @@
 </header>
 
 <main>
+  <div class="stats-grid" id="statsGrid">
+    <div class="stat-card">
+      <div class="stat-label"><span class="live-dot"></span>Active users</div>
+      <div class="stat-value" id="statActiveUsers">—</div>
+      <div class="stat-sub">last 15 min</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Orders today</div>
+      <div class="stat-value" id="statTodayTotal">—</div>
+      <div class="stat-sub" id="statTodayCount">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">All-time orders</div>
+      <div class="stat-value" id="statAllTimeTotal">—</div>
+      <div class="stat-sub" id="statAllTimeCount">—</div>
+    </div>
+  </div>
+
   <div class="card">
     <h2>Add a new vendor</h2>
     <form id="vendorForm">
@@ -191,7 +323,7 @@
       <input type="text" id="address" name="address" placeholder="e.g. 12 Ogoja Rd, Abakaliki" required />
 
       <label>GPS Coordinates <span class="optional">(optional)</span></label>
-      <div class="row">
+      <div class="row stack-mobile">
         <div>
           <input type="number" step="any" id="latitude" name="latitude" placeholder="Latitude" />
         </div>
@@ -210,7 +342,7 @@
       </select>
 
       <label for="accountNumber">Account Number</label>
-      <div class="row">
+      <div class="row account-row">
         <div>
           <input type="text" id="accountNumber" name="accountNumber" placeholder="10-digit account number" maxlength="10" inputmode="numeric" required />
         </div>
@@ -243,7 +375,9 @@
 
   <div class="card">
     <h2>Registered vendors</h2>
-    <div id="vendorListWrap"><p class="empty">Loading…</p></div>
+    <div class="table-scroll">
+      <div id="vendorListWrap"><p class="empty">Loading…</p></div>
+    </div>
   </div>
 </main>
 
@@ -436,8 +570,44 @@
     }
   });
 
+  // --- Stats dashboard -------------------------------------------------
+
+  const statActiveUsers = document.getElementById('statActiveUsers');
+  const statTodayTotal = document.getElementById('statTodayTotal');
+  const statTodayCount = document.getElementById('statTodayCount');
+  const statAllTimeTotal = document.getElementById('statAllTimeTotal');
+  const statAllTimeCount = document.getElementById('statAllTimeCount');
+
+  function formatNaira(amount) {
+    return '₦' + (Number(amount) || 0).toLocaleString('en-US');
+  }
+
+  async function loadStats() {
+    try {
+      const res = await fetch('/admin/api/stats');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load stats');
+
+      statActiveUsers.textContent = data.activeUsers ?? '—';
+      statTodayTotal.textContent = formatNaira(data.today?.total);
+      statTodayCount.textContent = `${data.today?.count ?? 0} order${(data.today?.count ?? 0) === 1 ? '' : 's'} today`;
+      statAllTimeTotal.textContent = formatNaira(data.allTime?.total);
+      statAllTimeCount.textContent = `${data.allTime?.count ?? 0} order${(data.allTime?.count ?? 0) === 1 ? '' : 's'} total`;
+    } catch (err) {
+      statActiveUsers.textContent = '—';
+      statTodayTotal.textContent = '—';
+      statTodayCount.textContent = err.message;
+      statAllTimeTotal.textContent = '—';
+      statAllTimeCount.textContent = '';
+    }
+  }
+
   loadBanks();
   loadVendors();
+  loadStats();
+  // Refresh stats periodically so "active users" and today's totals stay
+  // current without requiring a manual page reload.
+  setInterval(loadStats, 30000);
 </script>
 </body>
 </html>
