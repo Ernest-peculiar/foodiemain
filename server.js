@@ -1714,6 +1714,80 @@ app.get('/admin/api/vendors', checkAdminAuth, async (req, res) => {
 
   return res.status(200).json({ vendors: data || [] });
 });
+// --- Admin dashboard stats ---------------------------------------------
+// Powers the three stat cards at the top of the admin dashboard:
+//   1. Active users  — distinct phone numbers that sent an inbound
+//      message within the last ACTIVE_WINDOW_MINUTES. There's no real
+//      "online" concept in a WhatsApp bot (no persistent connection), so
+//      "currently on the app" is approximated as "messaged us recently."
+//      Requires the `messages` table to have a `created_at timestamptz`
+//      column (it should already, as a default Supabase column).
+//   2. Orders today  — count + ₦ total of orders that were actually PAID
+//      today (payment_status = 'paid', filtered on paid_at). We use paid
+//      orders rather than every "started" order so the number reflects
+//      real revenue, not abandoned checkouts.
+//   3. All-time orders — same, with no date filter.
+//
+// Add this route next to the other /admin/api/* routes (e.g. right after
+// GET /admin/api/vendors) in server.js.
+const ACTIVE_USER_WINDOW_MINUTES = 15;
+
+app.get('/admin/api/stats', checkAdminAuth, async (req, res) => {
+  if (!supabase) {
+    return res.status(503).json({ error: 'Supabase is not configured on this server.' });
+  }
+
+  try {
+    // 1. Active users: distinct phones with an inbound message recently.
+    const activeSince = new Date(Date.now() - ACTIVE_USER_WINDOW_MINUTES * 60 * 1000).toISOString();
+    const { data: activeRows, error: activeError } = await supabase
+      .from('messages')
+      .select('phone')
+      .eq('direction', 'inbound')
+      .gte('created_at', activeSince);
+
+    if (activeError) {
+      console.error('Admin stats: failed to load active users:', activeError.message);
+    }
+    const activeUsers = new Set((activeRows || []).map((r) => r.phone)).size;
+
+    // 2. Today's paid orders (from local midnight).
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const { data: todayOrders, error: todayError } = await supabase
+      .from('orders')
+      .select('total')
+      .eq('payment_status', 'paid')
+      .gte('paid_at', startOfDay.toISOString());
+
+    if (todayError) {
+      console.error('Admin stats: failed to load today\'s orders:', todayError.message);
+    }
+    const todayCount = todayOrders?.length || 0;
+    const todayTotal = (todayOrders || []).reduce((sum, o) => sum + (Number(o.total) || 0), 0);
+
+    // 3. All-time paid orders.
+    const { data: allOrders, error: allError } = await supabase
+      .from('orders')
+      .select('total')
+      .eq('payment_status', 'paid');
+
+    if (allError) {
+      console.error('Admin stats: failed to load all-time orders:', allError.message);
+    }
+    const allTimeCount = allOrders?.length || 0;
+    const allTimeTotal = (allOrders || []).reduce((sum, o) => sum + (Number(o.total) || 0), 0);
+
+    return res.status(200).json({
+      activeUsers,
+      today: { count: todayCount, total: todayTotal },
+      allTime: { count: allTimeCount, total: allTimeTotal }
+    });
+  } catch (error) {
+    console.error('Admin stats: unexpected failure:', error.message || error);
+    return res.status(500).json({ error: 'Could not load dashboard stats.' });
+  }
+});
 
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
