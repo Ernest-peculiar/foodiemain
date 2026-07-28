@@ -76,6 +76,14 @@ const profiles = new Map();
 // onboarded (Supabase) vendors — the user either names a restaurant directly
 // ("rice from Munchy") or picks one from the full list of registered
 // restaurants. No map, no geocoding, no "share your location" step.
+//
+// NOTE: driver registration is no longer a WhatsApp self-service flow —
+// drivers are onboarded exclusively through the admin dashboard's "Add
+// Driver" form (see POST /admin/api/drivers below). DRIVER_REG_AWAIT_PHOTO
+// and DRIVER_AWAIT_VEHICLE_TYPE are kept below (and their handler functions
+// left in place further down) as dead code rather than deleted, so this is
+// a one-line revert if the in-chat flow is ever wanted back — but nothing
+// routes into them anymore.
 const STAGES = {
   ASK_LAST_MEAL: 'askLastMeal',
   ASK_MOOD: 'askMood',
@@ -92,6 +100,8 @@ const STAGES = {
   // Rider (driver) onboarding: name -> photo (must be taken live in WhatsApp,
   // not picked from gallery) -> vehicle type. Kept as three distinct stages
   // so a stray "hi" mid-registration can resume at the right step.
+  // UNREACHABLE as of the admin-dashboard driver onboarding change — see
+  // note above STAGES.
   DRIVER_REG_AWAIT_PHOTO: 'driverRegAwaitPhoto',
   DRIVER_AWAIT_VEHICLE_TYPE: 'driverAwaitVehicleType',
   // Delivery-proof-of-drop-off photo, requested at the END of a completed
@@ -449,6 +459,13 @@ async function handleVendorMenuCommands(text, phone, session) {
   };
 }
 
+// Handles "register vendor" / "register driver" commands. As of the admin
+// dashboard onboarding change, NEITHER role can self-register from WhatsApp
+// anymore — vendors are added via /admin/api/vendors and drivers via
+// /admin/api/drivers (see those routes further down). This function's job
+// is now just to catch anyone who taps the old "register_driver" payload
+// (or types the phrase) and point them at support instead of silently
+// treating it as free text (e.g. accidentally becoming a menu/name value).
 async function handleRegistrationFlow(text, phone, session) {
   let normalized = (text || '').trim().toLowerCase();
   if (normalized === 'register_vendor') normalized = 'register vendor';
@@ -481,6 +498,11 @@ async function handleRegistrationFlow(text, phone, session) {
     };
   }
 
+  // Driver self-registration has likewise been removed. Drivers are now
+  // added exclusively through the admin dashboard's "Add Driver" form (see
+  // POST /admin/api/drivers below), which upserts the driver row directly
+  // (photo included) and sends them a WhatsApp welcome message. If a driver
+  // is already on file, point them at availability instead of doing nothing.
   const driverRecord = await getDriverRecordByPhone(phone);
   if (driverRecord) {
     return {
@@ -491,19 +513,17 @@ async function handleRegistrationFlow(text, phone, session) {
   }
 
   return {
-    replies: [
-      { type: 'text', body: 'Great — I can register you as a driver. What is your full name?' }
-    ],
-    nextStage: 'driverAwaitName',
-    sessionData: { ...session, registrationRole: 'driver' }
+    replies: { type: 'text', body: `Driver onboarding is now handled by our team. Please contact Foodie support to get registered as a driver — once you're on our platform you'll be able to manage your availability right here.` },
+    nextStage: null,
+    sessionData: session
   };
 }
 
-// Handles the free-text steps of registration. For vendors that's just
-// name -> menu (unchanged). For drivers, ONLY the name is collected here —
-// the name step now hands off to a photo step and then a vehicle-type step
-// (see handleDriverRegistrationPhoto / handleDriverVehicleType below) before
-// a driver row is actually created.
+// Handles the free-text steps of registration. Only vendors reach this
+// anymore (name -> menu) — driver registration no longer runs through
+// WhatsApp at all, so the 'driverAwaitName' branch below is unreachable
+// dead code, kept only so finalizeRegistration doesn't need touching if the
+// in-chat driver flow is ever restored.
 async function finalizeRegistration(text, phone, session) {
   const role = session.registrationRole;
   const name = (text || '').trim();
@@ -580,8 +600,10 @@ async function finalizeRegistration(text, phone, session) {
     };
   }
 
-  // Driver: name step only. We do NOT upsert a driver record yet — that only
-  // happens once we also have a photo and a vehicle type.
+  // Driver: UNREACHABLE — handleRegistrationFlow no longer sets
+  // registrationRole: 'driver' or moves anyone into 'driverAwaitName', so
+  // this branch is never entered. Left in place in case the in-chat driver
+  // flow is restored later.
   if (session.stage === 'driverAwaitName') {
     return {
       replies: {
@@ -975,21 +997,13 @@ async function handleDeliveryPhotoMessage(message, phone, session) {
 }
 
 // --- Driver (rider) onboarding: photo + vehicle type ------------------------
-// Registration flow is: name (handled in finalizeRegistration above) ->
-// photo (this step) -> vehicle type (next step) -> driver row created.
-//
-// IMPORTANT — things this file cannot do on its own:
-// 1. WhatsApp's webhook payload for an image message does NOT indicate
-//    whether the photo was taken live with the in-chat camera or picked
-//    from the device gallery — that distinction isn't exposed by the API.
-//    So "must be taken on WhatsApp" is enforced by instruction only (the
-//    prompt text below), not verified technically.
-// 2. This calls dispatch.uploadDriverPhoto(...), which must exist in
-//    lib/order-dispatch.js (mirroring the existing uploadDeliveryPhoto).
-// 3. dispatch.upsertDriver(...) needs to accept and persist `photoUrl` and
-//    `vehicleType`. Add `photo_url text` and `vehicle_type text` columns
-//    (nullable, for existing drivers) to the `drivers` table in
-//    supabase-schema.sql, and pass them through in upsertDriver's payload.
+// UNREACHABLE as of the admin-dashboard driver onboarding change —
+// handleRegistrationFlow no longer routes anyone into
+// STAGES.DRIVER_REG_AWAIT_PHOTO, so handleIncomingMessage's dispatch to this
+// function never fires in practice. Left in place (not deleted) purely so
+// this is a one-line revert if the in-chat driver flow is ever restored;
+// drivers are now added exclusively via POST /admin/api/drivers, which
+// calls dispatch.uploadDriverPhoto and dispatch.upsertDriver directly.
 async function handleDriverRegistrationPhoto(message, phone, session) {
   if (message.type !== 'image' || !message.image?.id) {
     return {
@@ -1067,7 +1081,9 @@ async function handleDriverRegistrationPhoto(message, phone, session) {
 
 // Vehicle category picker. "Legedezbenz" is used verbatim as requested for
 // the fourth option — rename the label (and its VEHICLE_TYPE_LABELS entries
-// below) if it should read something else, e.g. "Car".
+// below) if it should read something else, e.g. "Car". Still used by the
+// admin dashboard's vehicle-type dropdown (kept in sync manually with
+// public/admin/index.html).
 function getVehicleTypeListReply(bodyText = 'What do you ride for deliveries?') {
   return {
     type: 'interactive',
@@ -1104,8 +1120,9 @@ const VEHICLE_TYPE_LABELS = {
   legedezbenz: 'Legedezbenz'
 };
 
-// Final registration step: name + photo already captured on the session, now
-// a vehicle type — only at this point do we actually create the driver row.
+// UNREACHABLE as of the admin-dashboard driver onboarding change — nothing
+// routes into STAGES.DRIVER_AWAIT_VEHICLE_TYPE anymore. Left in place for
+// the same reason as handleDriverRegistrationPhoto above.
 async function handleDriverVehicleType(text, name, session, shortName, phone) {
   const trimmed = (text || '').trim().toLowerCase();
   const vehicleType = VEHICLE_TYPE_LABELS[trimmed] || null;
@@ -1356,6 +1373,7 @@ async function logMessage(phone, direction, messageType, body, payload) {
 // bytes it sent, and re-serializing req.body would not reliably reproduce
 // the same bytes (key order, whitespace, etc. can all differ).
 app.use(express.json({
+  limit: '10mb', // driver photo uploads travel as a base64 data URL in JSON — bump the default limit so those requests aren't rejected.
   verify: (req, res, buf) => { req.rawBody = buf; }
 }));
 app.use('/images', express.static(path.join(__dirname, 'public/images')));
@@ -1364,13 +1382,13 @@ app.get('/', (req, res) => {
   res.send('Foodie WhatsApp bot is running.');
 });
 
-// --- Admin dashboard (Add Vendor) -------------------------------------------
-// Vendors are now onboarded ONLY through this admin-only surface — there is
-// no public "register vendor" flow in the WhatsApp bot anymore (see
-// getNewUserButtonsReply / handleRegistrationFlow above). Everything under
-// /admin is gated by HTTP Basic Auth (checkAdminAuth below); set
-// ADMIN_USERNAME and ADMIN_PASSWORD in .env before deploying, or the whole
-// surface stays locked (fails closed).
+// --- Admin dashboard (Add Vendor / Add Driver) ------------------------------
+// Vendors and drivers are now onboarded ONLY through this admin-only surface
+// — there is no public "register vendor" or "register driver" flow in the
+// WhatsApp bot anymore (see getNewUserButtonsReply / handleRegistrationFlow
+// above). Everything under /admin is gated by HTTP Basic Auth
+// (checkAdminAuth below); set ADMIN_USERNAME and ADMIN_PASSWORD in .env
+// before deploying, or the whole surface stays locked (fails closed).
 function checkAdminAuth(req, res, next) {
   if (!ADMIN_USERNAME || !ADMIN_PASSWORD) {
     return res.status(503).send('Admin dashboard is not configured. Set ADMIN_USERNAME and ADMIN_PASSWORD in your .env file, then restart the server.');
@@ -1416,9 +1434,10 @@ function checkAdminAuth(req, res, next) {
   next();
 }
 
-// Serves public/admin/index.html (the Add Vendor form) at /admin/ — the
-// browser will prompt for the Basic Auth credentials automatically since
-// checkAdminAuth runs first and returns 401 with a WWW-Authenticate header.
+// Serves public/admin/index.html (the Add Vendor / Add Driver form) at
+// /admin/ — the browser will prompt for the Basic Auth credentials
+// automatically since checkAdminAuth runs first and returns 401 with a
+// WWW-Authenticate header.
 app.use('/admin', checkAdminAuth, express.static(path.join(__dirname, 'public/admin')));
 
 // --- Paystack bank list + account resolution (for vendor payout setup) ----
@@ -1714,6 +1733,142 @@ app.get('/admin/api/vendors', checkAdminAuth, async (req, res) => {
 
   return res.status(200).json({ vendors: data || [] });
 });
+
+// --- Admin: Add Driver ------------------------------------------------------
+// Replaces the old WhatsApp self-registration flow (name -> photo ->
+// vehicle type). The photo is optional here and, unlike the old in-chat
+// flow, there is no way for a web form to enforce "taken live with the
+// camera" — that requirement is simply dropped for admin-added drivers.
+//
+// The uploaded photo (if any) arrives as a base64 data URL in JSON (see
+// public/admin/index.html's readFileAsDataUrl), decoded below and handed to
+// dispatch.uploadDriverPhoto — the exact same function the old WhatsApp
+// photo step called, so it lands in the same storage bucket/shape.
+app.get('/admin/api/drivers', checkAdminAuth, async (req, res) => {
+  if (!supabase) {
+    return res.status(503).json({ error: 'Supabase is not configured on this server.' });
+  }
+
+  const { data, error } = await supabase
+    .from('drivers')
+    .select('*')
+    .order('updated_at', { ascending: false });
+
+  if (error) {
+    console.error('Admin: failed to list drivers:', error.message);
+    return res.status(500).json({ error: error.message });
+  }
+
+  return res.status(200).json({ drivers: data || [] });
+});
+
+app.post('/admin/api/drivers', checkAdminAuth, async (req, res) => {
+  if (!supabase) {
+    return res.status(503).json({ error: 'Supabase is not configured on this server (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY missing) — cannot save drivers.' });
+  }
+
+  const body = req.body || {};
+  const name = (body.name || '').trim();
+  const whatsappNumber = (body.whatsappNumber || '').trim();
+  const vehicleType = (body.vehicleType || '').trim();
+  const status = (body.status || 'active').trim().toLowerCase();
+  const photoDataUrl = (body.photo || '').trim();
+
+  const missing = [];
+  if (!name) missing.push('Driver Name');
+  if (!whatsappNumber) missing.push('WhatsApp Number');
+  if (!vehicleType) missing.push('Vehicle Type');
+  if (missing.length > 0) {
+    return res.status(400).json({ error: `Missing required field(s): ${missing.join(', ')}` });
+  }
+
+  const normalizedPhone = normalizePhone(whatsappNumber);
+  if (!normalizedPhone || normalizedPhone.length < 10) {
+    return res.status(400).json({ error: 'WhatsApp Number does not look valid — include the country code, e.g. 2348012345678.' });
+  }
+
+  if (status !== 'active' && status !== 'inactive') {
+    return res.status(400).json({ error: 'Status must be "active" or "inactive".' });
+  }
+
+  // Kept in sync with the <select> options in public/admin/index.html and
+  // with VEHICLE_TYPE_LABELS above.
+  const VALID_VEHICLE_TYPES = ['Bike', 'Motorcycle', 'Bicycle', 'Legedezbenz'];
+  if (!VALID_VEHICLE_TYPES.includes(vehicleType)) {
+    return res.status(400).json({ error: `Vehicle Type must be one of: ${VALID_VEHICLE_TYPES.join(', ')}.` });
+  }
+
+  let photoUrl = null;
+  if (photoDataUrl) {
+    const match = photoDataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+    if (!match) {
+      return res.status(400).json({ error: 'Driver photo was not in a recognizable image format.' });
+    }
+    const mimeType = match[1];
+    let buffer;
+    try {
+      buffer = Buffer.from(match[2], 'base64');
+    } catch (error) {
+      return res.status(400).json({ error: 'Driver photo could not be decoded.' });
+    }
+
+    try {
+      photoUrl = await dispatch.uploadDriverPhoto(
+        supabase,
+        normalizedPhone,
+        buffer,
+        mimeType,
+        `driver-${normalizedPhone}-${Date.now()}.jpg`
+      );
+    } catch (error) {
+      console.error('Admin: failed to upload driver photo:', error.message || error);
+      return res.status(500).json({ error: `Could not upload driver photo: ${error.message || error}` });
+    }
+  }
+
+  const isActive = status === 'active';
+
+  // If no new photo was submitted this time (e.g. admin is just updating
+  // vehicle type or status for an existing driver), keep whatever photo is
+  // already on file rather than wiping it out.
+  let existingDriver = null;
+  if (!photoUrl) {
+    existingDriver = await getDriverRecordByPhone(normalizedPhone);
+  }
+
+  let driver;
+  try {
+    driver = await dispatch.upsertDriver(supabase, {
+      phone: normalizedPhone,
+      name,
+      photoUrl: photoUrl || existingDriver?.photo_url || null,
+      vehicleType,
+      isActive,
+      isOnline: existingDriver?.is_online ?? existingDriver?.isOnline ?? false
+    });
+  } catch (error) {
+    console.error('Admin: failed to save driver:', error.message || error);
+    return res.status(500).json({
+      error: `Could not save driver: ${error.message || error}.`
+    });
+  }
+
+  // Notify the driver on WhatsApp — same 24-hour customer-service-window
+  // caveat as the vendor welcome message above: this will silently fail to
+  // deliver to a driver who has never messaged the bot (check server logs
+  // for WhatsApp error code 131047/131026 if that happens).
+  try {
+    await sendWhatsAppMessage(normalizedPhone, {
+      type: 'text',
+      body: `Welcome to Foodie! You've been registered as a driver on our platform. Reply online/offline any time to control whether you receive new delivery requests.`
+    });
+  } catch (error) {
+    console.error('Admin: WhatsApp welcome message to driver threw unexpectedly:', error.message || error);
+  }
+
+  return res.status(200).json({ driver });
+});
+
 // --- Admin dashboard stats ---------------------------------------------
 // Powers the three stat cards at the top of the admin dashboard:
 //   1. Active users  — distinct phone numbers that sent an inbound
@@ -1727,9 +1882,6 @@ app.get('/admin/api/vendors', checkAdminAuth, async (req, res) => {
 //      orders rather than every "started" order so the number reflects
 //      real revenue, not abandoned checkouts.
 //   3. All-time orders — same, with no date filter.
-//
-// Add this route next to the other /admin/api/* routes (e.g. right after
-// GET /admin/api/vendors) in server.js.
 const ACTIVE_USER_WINDOW_MINUTES = 15;
 
 app.get('/admin/api/stats', checkAdminAuth, async (req, res) => {
@@ -2374,7 +2526,10 @@ async function handleIncomingMessage(message, value) {
   // tapped "Register driver" by mistake, that button's payload
   // ("register_driver") wasn't recognized as a command at all — it was
   // swallowed as free text and used AS the restaurant name, corrupting the
-  // vendor record ("✅ Registered register_driver as a vendor.").
+  // vendor record ("✅ Registered register_driver as a vendor."). As of the
+  // admin-dashboard onboarding change, handleRegistrationFlow now redirects
+  // both roles to support rather than starting an in-chat flow — see that
+  // function above.
   const registrationReply = await handleRegistrationFlow(text, from, session);
   // "menu" / "edit menu" are likewise explicit vendor commands and must be
   // recognized regardless of any in-progress stage, same rationale as
@@ -2392,10 +2547,8 @@ async function handleIncomingMessage(message, value) {
   } else if (session.stage === 'vendorAwaitName' || session.stage === STAGES.VENDOR_AWAIT_MENU || session.stage === 'driverAwaitName') {
     result = await finalizeRegistration(text, from, session);
   } else if (session.stage === STAGES.DRIVER_REG_AWAIT_PHOTO) {
-    // Rider onboarding photo — needs the raw `message` object (to read
-    // message.image), so it's handled here rather than through the
-    // text-only buildReply() path, same pattern as the delivery-proof photo
-    // stage below.
+    // Rider onboarding photo — UNREACHABLE now (see notes on
+    // handleDriverRegistrationPhoto above), kept for symmetry / easy revert.
     result = await handleDriverRegistrationPhoto(message, from, session);
   } else if (session.stage === STAGES.DRIVER_AWAIT_PHOTO) {
     result = await handleDeliveryPhotoMessage(message, from, session);
@@ -2501,11 +2654,11 @@ async function askGrok(userMessage, sessionData = {}, { creative = false } = {})
 
 const STATIC_GREETING = `Hi! I'm *Foodie* — your personal Nigerian food guide. Tell me you're hungry and I'll handle the rest!`;
 
-// Buttons shown to new users so they can register or order with a tap.
-// NOTE: there is deliberately no "Register vendor" button anymore — vendors
-// are onboarded exclusively through the admin dashboard (see the /admin
-// routes near the bottom of this file). Public self-registration for
-// vendors has been removed; only driver self-registration remains.
+// Buttons shown to new users so they can order with a tap. NOTE: there is
+// deliberately no "Register vendor" or "Register driver" button anymore —
+// both vendors and drivers are onboarded exclusively through the admin
+// dashboard (see the /admin routes near the bottom of this file). Public
+// self-registration for either role has been removed.
 function getNewUserButtonsReply(bodyText = 'Get started with Foodie:') {
   return {
     type: 'interactive',
@@ -2514,7 +2667,6 @@ function getNewUserButtonsReply(bodyText = 'Get started with Foodie:') {
       body: { text: bodyText },
       action: {
         buttons: [
-          { type: 'reply', reply: { id: 'register_driver', title: 'Register as a driver' } },
           { type: 'reply', reply: { id: 'order_now', title: 'Order now' } }
         ]
       }
