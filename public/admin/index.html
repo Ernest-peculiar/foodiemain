@@ -105,6 +105,7 @@
   input[type="email"],
   input[type="tel"],
   input[type="number"],
+  input[type="file"],
   select,
   textarea {
     width: 100%;
@@ -113,6 +114,10 @@
     border-radius: 8px;
     font-size: 14px;
     font-family: inherit;
+  }
+  input[type="file"] {
+    padding: 8px 10px;
+    background: #fff;
   }
   textarea {
     resize: vertical;
@@ -163,20 +168,20 @@
   button.secondary:disabled {
     background: #999;
   }
-  #message {
+  #message, #driverMessage {
     margin-top: 14px;
     padding: 10px 12px;
     border-radius: 8px;
     font-size: 13px;
     display: none;
   }
-  #message.success {
+  #message.success, #driverMessage.success {
     display: block;
     background: #eafaf0;
     color: #1a7f37;
     border: 1px solid #b7e6c6;
   }
-  #message.error {
+  #message.error, #driverMessage.error {
     display: block;
     background: #fdeeee;
     color: #b3261e;
@@ -216,6 +221,14 @@
     width: 100%;
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
+  }
+  .avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    object-fit: cover;
+    display: block;
+    background: #eee;
   }
 
   /* --- Mobile responsiveness -------------------------------------------- */
@@ -281,7 +294,7 @@
 <body>
 <header>
   <h1>🧾 Foodie Admin</h1>
-  <p>Add Vendor — internal use only, not linked from the WhatsApp bot.</p>
+  <p>Add Vendor / Add Driver — internal use only, not linked from the WhatsApp bot.</p>
 </header>
 
 <main>
@@ -379,6 +392,54 @@
       <div id="vendorListWrap"><p class="empty">Loading…</p></div>
     </div>
   </div>
+
+  <!-- --- Add Driver ------------------------------------------------------
+       Drivers are now onboarded here instead of through the WhatsApp
+       "Register as a driver" self-service flow (that button has been
+       removed from the bot). A photo can optionally be uploaded from any
+       image file — there's no way for a web form to enforce "taken live
+       with the camera" the way the old WhatsApp flow did, so that
+       requirement is simply dropped here. -->
+  <div class="card">
+    <h2>Add a new driver</h2>
+    <form id="driverForm">
+      <label for="driverName">Driver Name</label>
+      <input type="text" id="driverName" name="driverName" placeholder="e.g. Emeka Nwosu" required />
+
+      <label for="driverWhatsappNumber">WhatsApp Number</label>
+      <input type="tel" id="driverWhatsappNumber" name="driverWhatsappNumber" placeholder="e.g. 2348012345678" required />
+      <div class="hint">Include the country code, no spaces or dashes needed — it will be normalized automatically.</div>
+
+      <label for="vehicleType">Vehicle Type</label>
+      <select id="vehicleType" name="vehicleType" required>
+        <option value="">Select vehicle…</option>
+        <option value="Bike">Bike</option>
+        <option value="Motorcycle">Motorcycle</option>
+        <option value="Bicycle">Bicycle</option>
+        <option value="Legedezbenz">Legedezbenz</option>
+      </select>
+
+      <label for="driverPhoto">Driver Photo <span class="optional">(optional)</span></label>
+      <input type="file" id="driverPhoto" name="driverPhoto" accept="image/*" />
+      <div class="hint">Shown to customers and vendors when this driver accepts a delivery. Can be added or changed later by re-submitting this form with the same WhatsApp number.</div>
+
+      <label for="driverStatus">Status</label>
+      <select id="driverStatus" name="driverStatus">
+        <option value="active" selected>Active</option>
+        <option value="inactive">Inactive</option>
+      </select>
+
+      <button type="submit" id="driverSubmitBtn">Add Driver</button>
+      <div id="driverMessage"></div>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>Registered drivers</h2>
+    <div class="table-scroll">
+      <div id="driverListWrap"><p class="empty">Loading…</p></div>
+    </div>
+  </div>
 </main>
 
 <script>
@@ -396,9 +457,9 @@
   const bankCodeHidden = document.getElementById('bankCode');
   const bankNameHidden = document.getElementById('bankName');
 
-  function showMessage(text, isError) {
-    messageEl.textContent = text;
-    messageEl.className = isError ? 'error' : 'success';
+  function showMessage(el, text, isError) {
+    el.textContent = text;
+    el.className = isError ? 'error' : 'success';
   }
 
   function escapeHtml(str) {
@@ -521,7 +582,7 @@
     // Block submission until the payout account has actually been verified
     // for the current bank + account number on the form.
     if (!accountNameHidden.value) {
-      showMessage("❌ Please verify the vendor's bank account before submitting.", true);
+      showMessage(messageEl, "❌ Please verify the vendor's bank account before submitting.", true);
       return;
     }
 
@@ -557,16 +618,113 @@
       const menuNote = data.menuItemCount > 0
         ? ` Menu (${data.menuItemCount} item${data.menuItemCount === 1 ? '' : 's'}) is live.`
         : ' No menu added yet — the restaurant won\'t appear to customers until one is added.';
-      showMessage('✅ Vendor added and notified on WhatsApp.' + menuNote, false);
+      showMessage(messageEl, '✅ Vendor added and notified on WhatsApp.' + menuNote, false);
       form.reset();
       document.getElementById('status').value = 'active';
       resetVerification();
       loadVendors();
     } catch (err) {
-      showMessage('❌ ' + err.message, true);
+      showMessage(messageEl, '❌ ' + err.message, true);
     } finally {
       submitBtn.disabled = false;
       submitBtn.textContent = 'Add Vendor';
+    }
+  });
+
+  // --- Add Driver ------------------------------------------------------
+
+  const driverForm = document.getElementById('driverForm');
+  const driverMessageEl = document.getElementById('driverMessage');
+  const driverSubmitBtn = document.getElementById('driverSubmitBtn');
+  const driverListWrap = document.getElementById('driverListWrap');
+  const driverPhotoInput = document.getElementById('driverPhoto');
+
+  // Reads the chosen file (if any) as a base64 data URL so it can travel in
+  // the same JSON POST as the rest of the form — no multipart/form-data or
+  // extra upload endpoint needed. See POST /admin/api/drivers on the server,
+  // which decodes this and hands it to dispatch.uploadDriverPhoto.
+  function readFileAsDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      if (!file) return resolve(null);
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('Could not read the selected photo.'));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function loadDrivers() {
+    try {
+      const res = await fetch('/admin/api/drivers');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load drivers');
+      renderDrivers(data.drivers || []);
+    } catch (err) {
+      driverListWrap.innerHTML = '<p class="empty">Could not load drivers: ' + escapeHtml(err.message) + '</p>';
+    }
+  }
+
+  function renderDrivers(drivers) {
+    if (!drivers.length) {
+      driverListWrap.innerHTML = '<p class="empty">No drivers added yet.</p>';
+      return;
+    }
+    const rows = drivers.map((d) => {
+      const isActive = (d.is_active ?? d.isActive ?? true) !== false;
+      const isOnline = (d.is_online ?? d.isOnline ?? false) === true;
+      const photoCell = d.photo_url
+        ? '<img class="avatar" src="' + escapeHtml(d.photo_url) + '" alt="" />'
+        : '<span class="empty">No photo</span>';
+      return '<tr>'
+        + '<td>' + photoCell + '</td>'
+        + '<td>' + escapeHtml(d.name) + '</td>'
+        + '<td>' + escapeHtml(d.phone) + '</td>'
+        + '<td>' + escapeHtml(d.vehicle_type || '') + '</td>'
+        + '<td><span class="badge ' + (isActive ? 'active' : 'inactive') + '">' + (isActive ? 'Active' : 'Inactive') + '</span></td>'
+        + '<td><span class="badge ' + (isOnline ? 'active' : 'inactive') + '">' + (isOnline ? 'Online' : 'Offline') + '</span></td>'
+        + '</tr>';
+    }).join('');
+    driverListWrap.innerHTML = '<table><thead><tr>'
+      + '<th>Photo</th><th>Name</th><th>WhatsApp</th><th>Vehicle</th><th>Status</th><th>Availability</th>'
+      + '</tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+
+  driverForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    driverMessageEl.className = '';
+
+    driverSubmitBtn.disabled = true;
+    driverSubmitBtn.textContent = 'Adding…';
+
+    try {
+      const photoFile = driverPhotoInput.files && driverPhotoInput.files[0];
+      const photoDataUrl = await readFileAsDataUrl(photoFile);
+
+      const payload = {
+        name: document.getElementById('driverName').value.trim(),
+        whatsappNumber: document.getElementById('driverWhatsappNumber').value.trim(),
+        vehicleType: document.getElementById('vehicleType').value,
+        status: document.getElementById('driverStatus').value,
+        photo: photoDataUrl || undefined
+      };
+
+      const res = await fetch('/admin/api/drivers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to add driver');
+
+      showMessage(driverMessageEl, '✅ Driver added and notified on WhatsApp.', false);
+      driverForm.reset();
+      document.getElementById('driverStatus').value = 'active';
+      loadDrivers();
+    } catch (err) {
+      showMessage(driverMessageEl, '❌ ' + err.message, true);
+    } finally {
+      driverSubmitBtn.disabled = false;
+      driverSubmitBtn.textContent = 'Add Driver';
     }
   });
 
@@ -604,6 +762,7 @@
 
   loadBanks();
   loadVendors();
+  loadDrivers();
   loadStats();
   // Refresh stats periodically so "active users" and today's totals stay
   // current without requiring a manual page reload.
