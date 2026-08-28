@@ -797,6 +797,8 @@ setupAdminRoutes(app, {
   PUBLIC_URL,
   WHATSAPP_TOKEN,
   sendWhatsAppMessage,
+  parseEmail,
+  parseVendorMenu,
 });
 
 // Setup webhook routes
