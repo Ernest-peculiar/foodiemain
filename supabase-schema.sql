@@ -92,7 +92,7 @@ begin
   if not found then
     return jsonb_build_object('ok', false, 'reason', 'order_not_found');
   end if;
-
+                         
   if order_row.status <> 'awaiting_driver' then
     return jsonb_build_object('ok', false, 'reason', 'order_not_available');
   end if;
