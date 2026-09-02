@@ -82,6 +82,7 @@ const {
   stripOrderFiller,
   isValidWhatsAppPayload,
   looksLikeOrderRequest,
+  buildVendorWelcomeMessage,
 } = require("./lib/utils");
 
 const createDatabase = require("./lib/database");
@@ -197,6 +198,7 @@ const dispatchHandlers = createDispatchHandlers({
   normalizePhone,
   parseVendorMenu,
   sendWhatsAppMessage,
+  buildVendorWelcomeMessage,
   getVendorRecordByPhone,
   getDriverRecordByPhone,
   getVendorMenuManagementListReply: uiHelpers.getVendorMenuManagementListReply,
@@ -799,6 +801,7 @@ setupAdminRoutes(app, {
   sendWhatsAppMessage,
   parseEmail,
   parseVendorMenu,
+  buildVendorWelcomeMessage,
 });
 
 // Setup webhook routes
