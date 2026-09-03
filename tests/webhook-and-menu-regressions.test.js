@@ -6,6 +6,7 @@ const {
 } = require("../lib/utils");
 const createDatabase = require("../lib/database");
 const createStageHandlers = require("../lib/handlers-stages");
+const createUIHelpers = require("../lib/helpers-ui");
 
 test("shouldProcessWhatsAppMessage ignores duplicate webhook delivery IDs", () => {
   const seen = new Map();
@@ -73,6 +74,28 @@ test("hasMenuContent accepts stringified menu_items JSON", () => {
     }),
     true,
   );
+});
+
+test("parseVendorMenu handles pasted menu lines with extra text and section headers", () => {
+  const ui = createUIHelpers({
+    MOOD_CATALOG: {},
+    PUBLIC_URL: "https://example.com",
+  });
+  const menu = `BASMATI RICE - 2200 with takeaway
+BEANS with takeaway - 1200
+VANILLA CAKE - 10000 and 8000
+Drinks:
+FANTA - 500`;
+
+  const items = ui.parseVendorMenu(menu);
+
+  assert.equal(items.length, 4);
+  assert.equal(items[0].title, "BASMATI RICE");
+  assert.equal(items[0].price, 2200);
+  assert.equal(items[2].title, "VANILLA CAKE");
+  assert.equal(items[2].price, 10000);
+  assert.equal(items[3].title, "FANTA");
+  assert.equal(items[3].price, 500);
 });
 
 test("restaurant order flow accepts menu_items-only vendors", async () => {
