@@ -5,11 +5,28 @@ create table if not exists vendors (
   name text not null,
   phone text unique,
   menu text,
+  menu_items jsonb default '[]'::jsonb,
   is_active boolean not null default true,
   is_open boolean not null default true,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+-- Existing vendor rows created before the structured menu column existed may
+-- still contain a JSON string in menu_items. Normalize those rows so the app can
+-- read them as arrays instead of treating the menu as empty.
+update vendors
+set menu_items = case
+  when menu_items is null then '[]'::jsonb
+  when jsonb_typeof(menu_items) = 'string' and trim(menu_items::text) in ('', '""', 'null') then '[]'::jsonb
+  when jsonb_typeof(menu_items) = 'string' then (menu_items::text)::jsonb
+  else menu_items
+end
+where menu_items is null
+   or jsonb_typeof(menu_items) = 'string';
+
+alter table vendors
+  add column if not exists menu_items jsonb default '[]'::jsonb;
 
 create table if not exists drivers (
   id uuid primary key default gen_random_uuid(),

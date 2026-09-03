@@ -622,10 +622,18 @@
         const rows = vendors
           .map((v) => {
             const isActive = (v.is_active ?? v.isActive ?? true) !== false;
-            const hasMenu = !!(
-              v.menu ||
-              (Array.isArray(v.menu_items) && v.menu_items.length > 0)
-            );
+            let menuItems = [];
+            if (Array.isArray(v.menu_items)) {
+              menuItems = v.menu_items;
+            } else if (typeof v.menu_items === "string") {
+              try {
+                const parsed = JSON.parse(v.menu_items);
+                menuItems = Array.isArray(parsed) ? parsed : [];
+              } catch {
+                menuItems = [];
+              }
+            }
+            const hasMenu = !!(v.menu || menuItems.length > 0);
             // Payout column: show bank + last 4 digits of account number only
             // (never the full number) so this table can't casually leak the
             // whole account number to anyone glancing at the admin screen.

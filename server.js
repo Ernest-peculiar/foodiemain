@@ -413,12 +413,21 @@ async function handleBrowseRestaurants(
 
 // Build vendor menu from restaurant record
 function buildVendorMenuReply(vendorRecord, introText) {
-  const sourceItems = Array.isArray(vendorRecord.menu_items)
-    ? vendorRecord.menu_items
-    : null;
+  let parsedMenuItems = [];
+  if (Array.isArray(vendorRecord.menu_items)) {
+    parsedMenuItems = vendorRecord.menu_items;
+  } else if (typeof vendorRecord.menu_items === "string") {
+    try {
+      const parsed = JSON.parse(vendorRecord.menu_items);
+      parsedMenuItems = Array.isArray(parsed) ? parsed : [];
+    } catch {
+      parsedMenuItems = [];
+    }
+  }
+
   const allItems =
-    sourceItems && sourceItems.length > 0
-      ? sourceItems
+    parsedMenuItems.length > 0
+      ? parsedMenuItems
       : parseVendorMenu(vendorRecord.menu || "");
   const menuItems = (allItems || []).filter(
     (it) => it && it.available !== false,

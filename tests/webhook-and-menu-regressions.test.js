@@ -65,6 +65,16 @@ test("getRegisteredVendors does not drop menu_items-only vendors during the DB q
   assert.equal(vendors[0].name, "Bistro 77");
 });
 
+test("hasMenuContent accepts stringified menu_items JSON", () => {
+  assert.equal(
+    hasMenuContent({
+      menu: null,
+      menu_items: JSON.stringify([{ title: "Jollof Rice", price: 2500 }]),
+    }),
+    true,
+  );
+});
+
 test("restaurant order flow accepts menu_items-only vendors", async () => {
   const vendorRecord = {
     id: "ven_123",
