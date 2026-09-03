@@ -85,6 +85,7 @@ const {
   buildVendorWelcomeMessage,
   shouldProcessIncomingWebhookMessage,
   hasMenuContent,
+  normalizeMenuItems,
 } = require("./lib/utils");
 
 const createDatabase = require("./lib/database");
@@ -200,6 +201,7 @@ const dispatchHandlers = createDispatchHandlers({
   dispatch,
   normalizePhone,
   parseVendorMenu,
+  normalizeMenuItems,
   sendWhatsAppMessage,
   buildVendorWelcomeMessage,
   getVendorRecordByPhone,
@@ -413,18 +415,7 @@ async function handleBrowseRestaurants(
 
 // Build vendor menu from restaurant record
 function buildVendorMenuReply(vendorRecord, introText) {
-  let parsedMenuItems = [];
-  if (Array.isArray(vendorRecord.menu_items)) {
-    parsedMenuItems = vendorRecord.menu_items;
-  } else if (typeof vendorRecord.menu_items === "string") {
-    try {
-      const parsed = JSON.parse(vendorRecord.menu_items);
-      parsedMenuItems = Array.isArray(parsed) ? parsed : [];
-    } catch {
-      parsedMenuItems = [];
-    }
-  }
-
+  const parsedMenuItems = normalizeMenuItems(vendorRecord.menu_items);
   const allItems =
     parsedMenuItems.length > 0
       ? parsedMenuItems
