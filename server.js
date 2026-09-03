@@ -413,9 +413,16 @@ async function handleBrowseRestaurants(
 
 // Build vendor menu from restaurant record
 function buildVendorMenuReply(vendorRecord, introText) {
+  const sourceItems = Array.isArray(vendorRecord.menu_items)
+    ? vendorRecord.menu_items
+    : null;
   const allItems =
-    vendorRecord.menu_items || parseVendorMenu(vendorRecord.menu);
-  const menuItems = allItems.filter((it) => it.available !== false);
+    sourceItems && sourceItems.length > 0
+      ? sourceItems
+      : parseVendorMenu(vendorRecord.menu || "");
+  const menuItems = (allItems || []).filter(
+    (it) => it && it.available !== false,
+  );
   const vendor = {
     id: vendorRecord.id,
     name: vendorRecord.name,

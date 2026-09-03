@@ -1,772 +1,996 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Foodie Admin — Add Vendor</title>
-<style>
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    background: #FAFAFA;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    color: #222;
-  }
-  header {
-    background: #FFC72C;
-    padding: 20px 24px;
-  }
-  header h1 {
-    margin: 0;
-    font-size: 20px;
-  }
-  header p {
-    margin: 4px 0 0;
-    font-size: 13px;
-    color: #4d3c00;
-  }
-  main {
-    max-width: 720px;
-    margin: 0 auto;
-    padding: 24px;
-  }
-  .card {
-    background: #fff;
-    border-radius: 14px;
-    padding: 24px;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-    margin-bottom: 24px;
-  }
-  h2 {
-    font-size: 16px;
-    margin: 0 0 16px;
-  }
-  /* --- Stats dashboard -------------------------------------------------- */
-  .stats-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 12px;
-    margin-bottom: 24px;
-  }
-  .stat-card {
-    background: #fff;
-    border-radius: 14px;
-    padding: 16px 18px;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-    min-width: 0;
-  }
-  .stat-card .stat-label {
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.4px;
-    color: #888;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-  .stat-card .stat-value {
-    font-size: 22px;
-    font-weight: 700;
-    color: #222;
-    margin-top: 6px;
-    line-height: 1.15;
-    word-break: break-word;
-  }
-  .stat-card .stat-sub {
-    font-size: 12px;
-    color: #888;
-    margin-top: 2px;
-  }
-  .live-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: #1a7f37;
-    display: inline-block;
-    flex: 0 0 auto;
-    animation: pulse 1.6s ease-in-out infinite;
-  }
-  @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.35; }
-  }
-  label {
-    display: block;
-    font-size: 13px;
-    font-weight: 600;
-    margin: 14px 0 6px;
-  }
-  label .optional {
-    font-weight: 400;
-    color: #888;
-  }
-  input[type="text"],
-  input[type="email"],
-  input[type="tel"],
-  input[type="number"],
-  input[type="file"],
-  select,
-  textarea {
-    width: 100%;
-    padding: 10px 12px;
-    border: 1px solid #ddd;
-    border-radius: 8px;
-    font-size: 14px;
-    font-family: inherit;
-  }
-  input[type="file"] {
-    padding: 8px 10px;
-    background: #fff;
-  }
-  textarea {
-    resize: vertical;
-    line-height: 1.5;
-  }
-  input:focus, select:focus, textarea:focus {
-    outline: none;
-    border-color: #FFC72C;
-  }
-  .row {
-    display: flex;
-    gap: 12px;
-  }
-  .row > div {
-    flex: 1;
-  }
-  .hint {
-    font-size: 12px;
-    color: #888;
-    margin-top: 4px;
-  }
-  button {
-    margin-top: 20px;
-    background: #1a7f37;
-    color: #fff;
-    border: none;
-    border-radius: 8px;
-    padding: 12px 20px;
-    font-size: 15px;
-    font-weight: 600;
-    cursor: pointer;
-    width: 100%;
-  }
-  button:disabled {
-    background: #9db8a4;
-    cursor: not-allowed;
-  }
-  /* Secondary "Verify" button next to the account number field — smaller,
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Foodie Admin — Add Vendor</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: #fafafa;
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        color: #222;
+      }
+      header {
+        background: #ffc72c;
+        padding: 20px 24px;
+      }
+      header h1 {
+        margin: 0;
+        font-size: 20px;
+      }
+      header p {
+        margin: 4px 0 0;
+        font-size: 13px;
+        color: #4d3c00;
+      }
+      main {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 24px;
+      }
+      .card {
+        background: #fff;
+        border-radius: 14px;
+        padding: 24px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+        margin-bottom: 24px;
+      }
+      h2 {
+        font-size: 16px;
+        margin: 0 0 16px;
+      }
+      /* --- Stats dashboard -------------------------------------------------- */
+      .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 12px;
+        margin-bottom: 24px;
+      }
+      .stat-card {
+        background: #fff;
+        border-radius: 14px;
+        padding: 16px 18px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+        min-width: 0;
+      }
+      .stat-card .stat-label {
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.4px;
+        color: #888;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .stat-card .stat-value {
+        font-size: 22px;
+        font-weight: 700;
+        color: #222;
+        margin-top: 6px;
+        line-height: 1.15;
+        word-break: break-word;
+      }
+      .stat-card .stat-sub {
+        font-size: 12px;
+        color: #888;
+        margin-top: 2px;
+      }
+      .live-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #1a7f37;
+        display: inline-block;
+        flex: 0 0 auto;
+        animation: pulse 1.6s ease-in-out infinite;
+      }
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.35;
+        }
+      }
+      label {
+        display: block;
+        font-size: 13px;
+        font-weight: 600;
+        margin: 14px 0 6px;
+      }
+      label .optional {
+        font-weight: 400;
+        color: #888;
+      }
+      input[type="text"],
+      input[type="email"],
+      input[type="tel"],
+      input[type="number"],
+      input[type="file"],
+      select,
+      textarea {
+        width: 100%;
+        padding: 10px 12px;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        font-size: 14px;
+        font-family: inherit;
+      }
+      input[type="file"] {
+        padding: 8px 10px;
+        background: #fff;
+      }
+      textarea {
+        resize: vertical;
+        line-height: 1.5;
+      }
+      input:focus,
+      select:focus,
+      textarea:focus {
+        outline: none;
+        border-color: #ffc72c;
+      }
+      .row {
+        display: flex;
+        gap: 12px;
+      }
+      .row > div {
+        flex: 1;
+      }
+      .hint {
+        font-size: 12px;
+        color: #888;
+        margin-top: 4px;
+      }
+      button {
+        margin-top: 20px;
+        background: #1a7f37;
+        color: #fff;
+        border: none;
+        border-radius: 8px;
+        padding: 12px 20px;
+        font-size: 15px;
+        font-weight: 600;
+        cursor: pointer;
+        width: 100%;
+      }
+      button:disabled {
+        background: #9db8a4;
+        cursor: not-allowed;
+      }
+      /* Secondary "Verify" button next to the account number field — smaller,
      inline, and not full-width like the main submit button. */
-  button.secondary {
-    margin-top: 0;
-    width: auto;
-    flex: 0 0 auto;
-    background: #222;
-    padding: 10px 16px;
-    font-size: 13px;
-  }
-  button.secondary:disabled {
-    background: #999;
-  }
-  #message, #driverMessage {
-    margin-top: 14px;
-    padding: 10px 12px;
-    border-radius: 8px;
-    font-size: 13px;
-    display: none;
-  }
-  #message.success, #driverMessage.success {
-    display: block;
-    background: #eafaf0;
-    color: #1a7f37;
-    border: 1px solid #b7e6c6;
-  }
-  #message.error, #driverMessage.error {
-    display: block;
-    background: #fdeeee;
-    color: #b3261e;
-    border: 1px solid #f3c6c4;
-  }
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 13px;
-  }
-  th, td {
-    text-align: left;
-    padding: 8px 10px;
-    border-bottom: 1px solid #eee;
-  }
-  th {
-    color: #888;
-    font-weight: 600;
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.4px;
-  }
-  .badge {
-    display: inline-block;
-    padding: 2px 8px;
-    border-radius: 999px;
-    font-size: 11px;
-    font-weight: 600;
-  }
-  .badge.active { background: #eafaf0; color: #1a7f37; }
-  .badge.inactive { background: #fdeeee; color: #b3261e; }
-  .empty {
-    color: #888;
-    font-size: 13px;
-  }
-  .table-scroll {
-    width: 100%;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-  }
-  .avatar {
-    width: 32px;
-    height: 32px;
-    border-radius: 50%;
-    object-fit: cover;
-    display: block;
-    background: #eee;
-  }
+      button.secondary {
+        margin-top: 0;
+        width: auto;
+        flex: 0 0 auto;
+        background: #222;
+        padding: 10px 16px;
+        font-size: 13px;
+      }
+      button.secondary:disabled {
+        background: #999;
+      }
+      #message,
+      #driverMessage {
+        margin-top: 14px;
+        padding: 10px 12px;
+        border-radius: 8px;
+        font-size: 13px;
+        display: none;
+      }
+      #message.success,
+      #driverMessage.success {
+        display: block;
+        background: #eafaf0;
+        color: #1a7f37;
+        border: 1px solid #b7e6c6;
+      }
+      #message.error,
+      #driverMessage.error {
+        display: block;
+        background: #fdeeee;
+        color: #b3261e;
+        border: 1px solid #f3c6c4;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 8px 10px;
+        border-bottom: 1px solid #eee;
+      }
+      th {
+        color: #888;
+        font-weight: 600;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.4px;
+      }
+      .badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 600;
+      }
+      .badge.active {
+        background: #eafaf0;
+        color: #1a7f37;
+      }
+      .badge.inactive {
+        background: #fdeeee;
+        color: #b3261e;
+      }
+      .empty {
+        color: #888;
+        font-size: 13px;
+      }
+      .table-scroll {
+        width: 100%;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+      .avatar {
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        object-fit: cover;
+        display: block;
+        background: #eee;
+      }
 
-  /* --- Mobile responsiveness -------------------------------------------- */
-  @media (max-width: 640px) {
-    header {
-      padding: 16px;
-    }
-    header h1 {
-      font-size: 18px;
-    }
-    header p {
-      font-size: 12px;
-    }
-    main {
-      padding: 14px;
-    }
-    .card {
-      padding: 16px;
-      border-radius: 12px;
-      margin-bottom: 16px;
-    }
-    .stats-grid {
-      grid-template-columns: repeat(2, 1fr);
-      gap: 10px;
-    }
-    .stat-card {
-      padding: 12px 14px;
-    }
-    .stat-card .stat-value {
-      font-size: 18px;
-    }
-    /* GPS coordinates row stacks on narrow screens */
-    .row.stack-mobile {
-      flex-direction: column;
-      gap: 0;
-    }
-    /* Account number + Verify button: keep on one line but let the button
+      /* --- Mobile responsiveness -------------------------------------------- */
+      @media (max-width: 640px) {
+        header {
+          padding: 16px;
+        }
+        header h1 {
+          font-size: 18px;
+        }
+        header p {
+          font-size: 12px;
+        }
+        main {
+          padding: 14px;
+        }
+        .card {
+          padding: 16px;
+          border-radius: 12px;
+          margin-bottom: 16px;
+        }
+        .stats-grid {
+          grid-template-columns: repeat(2, 1fr);
+          gap: 10px;
+        }
+        .stat-card {
+          padding: 12px 14px;
+        }
+        .stat-card .stat-value {
+          font-size: 18px;
+        }
+        /* GPS coordinates row stacks on narrow screens */
+        .row.stack-mobile {
+          flex-direction: column;
+          gap: 0;
+        }
+        /* Account number + Verify button: keep on one line but let the button
        shrink to content so it doesn't force horizontal overflow. */
-    .row.account-row {
-      flex-wrap: nowrap;
-      gap: 8px;
-    }
-    .row.account-row button.secondary {
-      padding: 10px 12px;
-      font-size: 12px;
-    }
-    table {
-      font-size: 12px;
-    }
-    th, td {
-      padding: 6px 8px;
-      white-space: nowrap;
-    }
-  }
+        .row.account-row {
+          flex-wrap: nowrap;
+          gap: 8px;
+        }
+        .row.account-row button.secondary {
+          padding: 10px 12px;
+          font-size: 12px;
+        }
+        table {
+          font-size: 12px;
+        }
+        th,
+        td {
+          padding: 6px 8px;
+          white-space: nowrap;
+        }
+      }
 
-  @media (max-width: 400px) {
-    .stats-grid {
-      grid-template-columns: 1fr 1fr;
-    }
-  }
-</style>
-</head>
-<body>
-<header>
-  <h1>🧾 Foodie Admin</h1>
-  <p>Add Vendor / Add Driver — internal use only, not linked from the WhatsApp bot.</p>
-</header>
+      @media (max-width: 400px) {
+        .stats-grid {
+          grid-template-columns: 1fr 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>🧾 Foodie Admin</h1>
+      <p>
+        Add Vendor / Add Driver — internal use only, not linked from the
+        WhatsApp bot.
+      </p>
+    </header>
 
-<main>
-  <div class="stats-grid" id="statsGrid">
-    <div class="stat-card">
-      <div class="stat-label"><span class="live-dot"></span>Active users</div>
-      <div class="stat-value" id="statActiveUsers">—</div>
-      <div class="stat-sub">last 15 min</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Orders today</div>
-      <div class="stat-value" id="statTodayTotal">—</div>
-      <div class="stat-sub" id="statTodayCount">—</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">All-time orders</div>
-      <div class="stat-value" id="statAllTimeTotal">—</div>
-      <div class="stat-sub" id="statAllTimeCount">—</div>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>Add a new vendor</h2>
-    <form id="vendorForm">
-      <label for="contactName">Vendor Name</label>
-      <input type="text" id="contactName" name="contactName" placeholder="e.g. Chidi Okafor" required />
-
-      <label for="restaurantName">Restaurant Name</label>
-      <input type="text" id="restaurantName" name="restaurantName" placeholder="e.g. Munchy Kitchen" required />
-
-      <label for="whatsappNumber">WhatsApp Number</label>
-      <input type="tel" id="whatsappNumber" name="whatsappNumber" placeholder="e.g. 2348012345678" required />
-      <div class="hint">Include the country code, no spaces or dashes needed — it will be normalized automatically.</div>
-
-      <label for="email">Email <span class="optional">(optional)</span></label>
-      <input type="email" id="email" name="email" placeholder="e.g. vendor@example.com" />
-
-      <label for="address">Address</label>
-      <input type="text" id="address" name="address" placeholder="e.g. 12 Ogoja Rd, Abakaliki" required />
-
-      <label>GPS Coordinates <span class="optional">(optional)</span></label>
-      <div class="row stack-mobile">
-        <div>
-          <input type="number" step="any" id="latitude" name="latitude" placeholder="Latitude" />
+    <main>
+      <div class="stats-grid" id="statsGrid">
+        <div class="stat-card">
+          <div class="stat-label">
+            <span class="live-dot"></span>Active users
+          </div>
+          <div class="stat-value" id="statActiveUsers">—</div>
+          <div class="stat-sub">last 15 min</div>
         </div>
-        <div>
-          <input type="number" step="any" id="longitude" name="longitude" placeholder="Longitude" />
+        <div class="stat-card">
+          <div class="stat-label">Orders today</div>
+          <div class="stat-value" id="statTodayTotal">—</div>
+          <div class="stat-sub" id="statTodayCount">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">All-time orders</div>
+          <div class="stat-value" id="statAllTimeTotal">—</div>
+          <div class="stat-sub" id="statAllTimeCount">—</div>
         </div>
       </div>
 
-      <!-- Payout details: where the money from paid orders gets sent for
+      <div class="card">
+        <h2>Add a new vendor</h2>
+        <form id="vendorForm">
+          <label for="contactName">Vendor Name</label>
+          <input
+            type="text"
+            id="contactName"
+            name="contactName"
+            placeholder="e.g. Chidi Okafor"
+            required
+          />
+
+          <label for="restaurantName">Restaurant Name</label>
+          <input
+            type="text"
+            id="restaurantName"
+            name="restaurantName"
+            placeholder="e.g. Munchy Kitchen"
+            required
+          />
+
+          <label for="whatsappNumber">WhatsApp Number</label>
+          <input
+            type="tel"
+            id="whatsappNumber"
+            name="whatsappNumber"
+            placeholder="e.g. 2348012345678"
+            required
+          />
+          <div class="hint">
+            Include the country code, no spaces or dashes needed — it will be
+            normalized automatically.
+          </div>
+
+          <label for="email"
+            >Email <span class="optional">(optional)</span></label
+          >
+          <input
+            type="email"
+            id="email"
+            name="email"
+            placeholder="e.g. vendor@example.com"
+          />
+
+          <label for="address">Address</label>
+          <input
+            type="text"
+            id="address"
+            name="address"
+            placeholder="e.g. 12 Ogoja Rd, Abakaliki"
+            required
+          />
+
+          <label
+            >GPS Coordinates <span class="optional">(optional)</span></label
+          >
+          <div class="row stack-mobile">
+            <div>
+              <input
+                type="number"
+                step="any"
+                id="latitude"
+                name="latitude"
+                placeholder="Latitude"
+              />
+            </div>
+            <div>
+              <input
+                type="number"
+                step="any"
+                id="longitude"
+                name="longitude"
+                placeholder="Longitude"
+              />
+            </div>
+          </div>
+
+          <!-- Payout details: where the money from paid orders gets sent for
            this vendor. Verified against Paystack's bank/resolve endpoint
            before the vendor can be saved, so a mistyped account number is
            caught up front rather than discovered after money moves. -->
-      <label for="bankSelect">Payout Bank</label>
-      <select id="bankSelect" name="bankSelect" required>
-        <option value="">Loading banks…</option>
-      </select>
+          <label for="bankSelect">Payout Bank</label>
+          <select id="bankSelect" name="bankSelect" required>
+            <option value="">Loading banks…</option>
+          </select>
 
-      <label for="accountNumber">Account Number</label>
-      <div class="row account-row">
-        <div>
-          <input type="text" id="accountNumber" name="accountNumber" placeholder="10-digit account number" maxlength="10" inputmode="numeric" required />
-        </div>
-        <div style="flex: 0 0 auto;">
-          <button type="button" class="secondary" id="verifyAccountBtn">Verify</button>
+          <label for="accountNumber">Account Number</label>
+          <div class="row account-row">
+            <div>
+              <input
+                type="text"
+                id="accountNumber"
+                name="accountNumber"
+                placeholder="10-digit account number"
+                maxlength="10"
+                inputmode="numeric"
+                required
+              />
+            </div>
+            <div style="flex: 0 0 auto">
+              <button type="button" class="secondary" id="verifyAccountBtn">
+                Verify
+              </button>
+            </div>
+          </div>
+          <div class="hint" id="accountVerifyHint">
+            This is the account customer payments for this vendor's food will be
+            paid out to. It must be verified before the vendor can be added.
+          </div>
+          <input type="hidden" id="accountName" name="accountName" />
+          <input type="hidden" id="bankCode" name="bankCode" />
+          <input type="hidden" id="bankName" name="bankName" />
+
+          <label for="menu"
+            >Restaurant Menu <span class="optional">(optional)</span></label
+          >
+          <textarea
+            id="menu"
+            name="menu"
+            rows="6"
+            placeholder="One item per line, with a price:&#10;Rice &amp; Beans - 1500&#10;Egusi Soup - 1800&#10;Chicken Sandwich - 1200"
+          ></textarea>
+          <div class="hint">
+            Every line needs a price (e.g. "Item name - 1500"). Leave blank to
+            add the menu later — the restaurant just won't show up to customers
+            until it has one. Once added, the vendor can manage it themselves on
+            WhatsApp by replying "menu" or "edit menu".
+          </div>
+
+          <label for="openingHours">Opening Hours</label>
+          <input
+            type="text"
+            id="openingHours"
+            name="openingHours"
+            placeholder="e.g. Mon-Sat 9am-9pm"
+            required
+          />
+
+          <label for="status">Status</label>
+          <select id="status" name="status">
+            <option value="active" selected>Active</option>
+            <option value="inactive">Inactive</option>
+          </select>
+
+          <button type="submit" id="submitBtn">Add Vendor</button>
+          <div id="message"></div>
+        </form>
+      </div>
+
+      <div class="card">
+        <h2>Registered vendors</h2>
+        <div class="table-scroll">
+          <div id="vendorListWrap"><p class="empty">Loading…</p></div>
         </div>
       </div>
-      <div class="hint" id="accountVerifyHint">This is the account customer payments for this vendor's food will be paid out to. It must be verified before the vendor can be added.</div>
-      <input type="hidden" id="accountName" name="accountName" />
-      <input type="hidden" id="bankCode" name="bankCode" />
-      <input type="hidden" id="bankName" name="bankName" />
 
-      <label for="menu">Restaurant Menu <span class="optional">(optional)</span></label>
-      <textarea id="menu" name="menu" rows="6" placeholder="One item per line, with a price:&#10;Rice &amp; Beans - 1500&#10;Egusi Soup - 1800&#10;Chicken Sandwich - 1200"></textarea>
-      <div class="hint">Every line needs a price (e.g. "Item name - 1500"). Leave blank to add the menu later — the restaurant just won't show up to customers until it has one. Once added, the vendor can manage it themselves on WhatsApp by replying "menu" or "edit menu".</div>
-
-      <label for="openingHours">Opening Hours</label>
-      <input type="text" id="openingHours" name="openingHours" placeholder="e.g. Mon-Sat 9am-9pm" required />
-
-      <label for="status">Status</label>
-      <select id="status" name="status">
-        <option value="active" selected>Active</option>
-        <option value="inactive">Inactive</option>
-      </select>
-
-      <button type="submit" id="submitBtn">Add Vendor</button>
-      <div id="message"></div>
-    </form>
-  </div>
-
-  <div class="card">
-    <h2>Registered vendors</h2>
-    <div class="table-scroll">
-      <div id="vendorListWrap"><p class="empty">Loading…</p></div>
-    </div>
-  </div>
-
-  <!-- --- Add Driver ------------------------------------------------------
+      <!-- --- Add Driver ------------------------------------------------------
        Drivers are now onboarded here instead of through the WhatsApp
        "Register as a driver" self-service flow (that button has been
        removed from the bot). A photo can optionally be uploaded from any
        image file — there's no way for a web form to enforce "taken live
        with the camera" the way the old WhatsApp flow did, so that
        requirement is simply dropped here. -->
-  <div class="card">
-    <h2>Add a new driver</h2>
-    <form id="driverForm">
-      <label for="driverName">Driver Name</label>
-      <input type="text" id="driverName" name="driverName" placeholder="e.g. Emeka Nwosu" required />
+      <div class="card">
+        <h2>Add a new driver</h2>
+        <form id="driverForm">
+          <label for="driverName">Driver Name</label>
+          <input
+            type="text"
+            id="driverName"
+            name="driverName"
+            placeholder="e.g. Emeka Nwosu"
+            required
+          />
 
-      <label for="driverWhatsappNumber">WhatsApp Number</label>
-      <input type="tel" id="driverWhatsappNumber" name="driverWhatsappNumber" placeholder="e.g. 2348012345678" required />
-      <div class="hint">Include the country code, no spaces or dashes needed — it will be normalized automatically.</div>
+          <label for="driverWhatsappNumber">WhatsApp Number</label>
+          <input
+            type="tel"
+            id="driverWhatsappNumber"
+            name="driverWhatsappNumber"
+            placeholder="e.g. 2348012345678"
+            required
+          />
+          <div class="hint">
+            Include the country code, no spaces or dashes needed — it will be
+            normalized automatically.
+          </div>
 
-      <label for="vehicleType">Vehicle Type</label>
-      <select id="vehicleType" name="vehicleType" required>
-        <option value="">Select vehicle…</option>
-        <option value="Bike">Bike</option>
-        <option value="Motorcycle">Motorcycle</option>
-        <option value="Bicycle">Bicycle</option>
-        <option value="Legedezbenz">Legedezbenz</option>
-      </select>
+          <label for="vehicleType">Vehicle Type</label>
+          <select id="vehicleType" name="vehicleType" required>
+            <option value="">Select vehicle…</option>
+            <option value="Bike">Bike</option>
+            <option value="Motorcycle">Motorcycle</option>
+            <option value="Bicycle">Bicycle</option>
+            <option value="Legedezbenz">Legedezbenz</option>
+          </select>
 
-      <label for="driverPhoto">Driver Photo <span class="optional">(optional)</span></label>
-      <input type="file" id="driverPhoto" name="driverPhoto" accept="image/*" />
-      <div class="hint">Shown to customers and vendors when this driver accepts a delivery. Can be added or changed later by re-submitting this form with the same WhatsApp number.</div>
+          <label for="driverPhoto"
+            >Driver Photo <span class="optional">(optional)</span></label
+          >
+          <input
+            type="file"
+            id="driverPhoto"
+            name="driverPhoto"
+            accept="image/*"
+          />
+          <div class="hint">
+            Shown to customers and vendors when this driver accepts a delivery.
+            Can be added or changed later by re-submitting this form with the
+            same WhatsApp number.
+          </div>
 
-      <label for="driverStatus">Status</label>
-      <select id="driverStatus" name="driverStatus">
-        <option value="active" selected>Active</option>
-        <option value="inactive">Inactive</option>
-      </select>
+          <label for="driverStatus">Status</label>
+          <select id="driverStatus" name="driverStatus">
+            <option value="active" selected>Active</option>
+            <option value="inactive">Inactive</option>
+          </select>
 
-      <button type="submit" id="driverSubmitBtn">Add Driver</button>
-      <div id="driverMessage"></div>
-    </form>
-  </div>
+          <button type="submit" id="driverSubmitBtn">Add Driver</button>
+          <div id="driverMessage"></div>
+        </form>
+      </div>
 
-  <div class="card">
-    <h2>Registered drivers</h2>
-    <div class="table-scroll">
-      <div id="driverListWrap"><p class="empty">Loading…</p></div>
-    </div>
-  </div>
-</main>
+      <div class="card">
+        <h2>Registered drivers</h2>
+        <div class="table-scroll">
+          <div id="driverListWrap"><p class="empty">Loading…</p></div>
+        </div>
+      </div>
+    </main>
 
-<script>
-  const form = document.getElementById('vendorForm');
-  const messageEl = document.getElementById('message');
-  const submitBtn = document.getElementById('submitBtn');
-  const vendorListWrap = document.getElementById('vendorListWrap');
+    <script>
+      const form = document.getElementById("vendorForm");
+      const messageEl = document.getElementById("message");
+      const submitBtn = document.getElementById("submitBtn");
+      const vendorListWrap = document.getElementById("vendorListWrap");
 
-  // Payout / bank verification elements
-  const bankSelect = document.getElementById('bankSelect');
-  const accountNumberInput = document.getElementById('accountNumber');
-  const verifyAccountBtn = document.getElementById('verifyAccountBtn');
-  const accountVerifyHint = document.getElementById('accountVerifyHint');
-  const accountNameHidden = document.getElementById('accountName');
-  const bankCodeHidden = document.getElementById('bankCode');
-  const bankNameHidden = document.getElementById('bankName');
+      // Payout / bank verification elements
+      const bankSelect = document.getElementById("bankSelect");
+      const accountNumberInput = document.getElementById("accountNumber");
+      const verifyAccountBtn = document.getElementById("verifyAccountBtn");
+      const accountVerifyHint = document.getElementById("accountVerifyHint");
+      const accountNameHidden = document.getElementById("accountName");
+      const bankCodeHidden = document.getElementById("bankCode");
+      const bankNameHidden = document.getElementById("bankName");
 
-  function showMessage(el, text, isError) {
-    el.textContent = text;
-    el.className = isError ? 'error' : 'success';
-  }
+      function showMessage(el, text, isError) {
+        el.textContent = text;
+        el.className = isError ? "error" : "success";
+      }
 
-  function escapeHtml(str) {
-    const div = document.createElement('div');
-    div.textContent = str == null ? '' : String(str);
-    return div.innerHTML;
-  }
+      function escapeHtml(str) {
+        const div = document.createElement("div");
+        div.textContent = str == null ? "" : String(str);
+        return div.innerHTML;
+      }
 
-  async function loadVendors() {
-    try {
-      const res = await fetch('/admin/api/vendors');
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to load vendors');
-      renderVendors(data.vendors || []);
-    } catch (err) {
-      vendorListWrap.innerHTML = '<p class="empty">Could not load vendors: ' + escapeHtml(err.message) + '</p>';
-    }
-  }
+      async function loadVendors() {
+        try {
+          const res = await fetch("/admin/api/vendors");
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || "Failed to load vendors");
+          renderVendors(data.vendors || []);
+        } catch (err) {
+          vendorListWrap.innerHTML =
+            '<p class="empty">Could not load vendors: ' +
+            escapeHtml(err.message) +
+            "</p>";
+        }
+      }
 
-  function renderVendors(vendors) {
-    if (!vendors.length) {
-      vendorListWrap.innerHTML = '<p class="empty">No vendors added yet.</p>';
-      return;
-    }
-    const rows = vendors.map((v) => {
-      const isActive = (v.is_active ?? v.isActive ?? true) !== false;
-      const hasMenu = !!v.menu;
-      // Payout column: show bank + last 4 digits of account number only
-      // (never the full number) so this table can't casually leak the
-      // whole account number to anyone glancing at the admin screen.
-      const payoutCell = v.account_number
-        ? escapeHtml(v.bank_name || '') + '<br><span style="color:#888">••••' + escapeHtml(String(v.account_number).slice(-4)) + '</span>'
-        : '<span class="empty">Not set</span>';
-      return '<tr>'
-        + '<td>' + escapeHtml(v.name) + '<br><span style="color:#888">' + escapeHtml(v.contact_name || '') + '</span></td>'
-        + '<td>' + escapeHtml(v.phone) + '</td>'
-        + '<td>' + escapeHtml(v.address || v.vicinity || '') + '</td>'
-        + '<td>' + escapeHtml(v.opening_hours || '') + '</td>'
-        + '<td>' + payoutCell + '</td>'
-        + '<td><span class="badge ' + (isActive ? 'active' : 'inactive') + '">' + (isActive ? 'Active' : 'Inactive') + '</span></td>'
-        + '<td>' + (hasMenu ? 'Yes' : 'Not yet') + '</td>'
-        + '</tr>';
-    }).join('');
-    vendorListWrap.innerHTML = '<table><thead><tr>'
-      + '<th>Restaurant</th><th>WhatsApp</th><th>Address</th><th>Hours</th><th>Payout</th><th>Status</th><th>Menu on file</th>'
-      + '</tr></thead><tbody>' + rows + '</tbody></table>';
-  }
+      function renderVendors(vendors) {
+        if (!vendors.length) {
+          vendorListWrap.innerHTML =
+            '<p class="empty">No vendors added yet.</p>';
+          return;
+        }
+        const rows = vendors
+          .map((v) => {
+            const isActive = (v.is_active ?? v.isActive ?? true) !== false;
+            const hasMenu = !!(
+              v.menu ||
+              (Array.isArray(v.menu_items) && v.menu_items.length > 0)
+            );
+            // Payout column: show bank + last 4 digits of account number only
+            // (never the full number) so this table can't casually leak the
+            // whole account number to anyone glancing at the admin screen.
+            const payoutCell = v.account_number
+              ? escapeHtml(v.bank_name || "") +
+                '<br><span style="color:#888">••••' +
+                escapeHtml(String(v.account_number).slice(-4)) +
+                "</span>"
+              : '<span class="empty">Not set</span>';
+            return (
+              "<tr>" +
+              "<td>" +
+              escapeHtml(v.name) +
+              '<br><span style="color:#888">' +
+              escapeHtml(v.contact_name || "") +
+              "</span></td>" +
+              "<td>" +
+              escapeHtml(v.phone) +
+              "</td>" +
+              "<td>" +
+              escapeHtml(v.address || v.vicinity || "") +
+              "</td>" +
+              "<td>" +
+              escapeHtml(v.opening_hours || "") +
+              "</td>" +
+              "<td>" +
+              payoutCell +
+              "</td>" +
+              '<td><span class="badge ' +
+              (isActive ? "active" : "inactive") +
+              '">' +
+              (isActive ? "Active" : "Inactive") +
+              "</span></td>" +
+              "<td>" +
+              (hasMenu ? "Yes" : "Not yet") +
+              "</td>" +
+              "</tr>"
+            );
+          })
+          .join("");
+        vendorListWrap.innerHTML =
+          "<table><thead><tr>" +
+          "<th>Restaurant</th><th>WhatsApp</th><th>Address</th><th>Hours</th><th>Payout</th><th>Status</th><th>Menu on file</th>" +
+          "</tr></thead><tbody>" +
+          rows +
+          "</tbody></table>";
+      }
 
-  // --- Bank list + account verification ------------------------------------
+      // --- Bank list + account verification ------------------------------------
 
-  async function loadBanks() {
-    try {
-      const res = await fetch('/admin/api/banks');
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to load banks');
-      bankSelect.innerHTML = '<option value="">Select bank…</option>'
-        + data.banks.map((b) => `<option value="${escapeHtml(b.code)}">${escapeHtml(b.name)}</option>`).join('');
-    } catch (err) {
-      bankSelect.innerHTML = '<option value="">Could not load banks</option>';
-    }
-  }
+      async function loadBanks() {
+        try {
+          const res = await fetch("/admin/api/banks");
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || "Failed to load banks");
+          bankSelect.innerHTML =
+            '<option value="">Select bank…</option>' +
+            data.banks
+              .map(
+                (b) =>
+                  `<option value="${escapeHtml(b.code)}">${escapeHtml(b.name)}</option>`,
+              )
+              .join("");
+        } catch (err) {
+          bankSelect.innerHTML =
+            '<option value="">Could not load banks</option>';
+        }
+      }
 
-  // Any change to bank or account number invalidates a prior verification —
-  // force a fresh "Verify" click rather than letting a stale accountName
-  // slip through attached to a now-different bank/account combo.
-  function resetVerification() {
-    accountNameHidden.value = '';
-    bankCodeHidden.value = '';
-    bankNameHidden.value = '';
-    accountVerifyHint.textContent = "This is the account customer payments for this vendor's food will be paid out to. It must be verified before the vendor can be added.";
-    accountVerifyHint.style.color = '#888';
-  }
-  bankSelect.addEventListener('change', resetVerification);
-  accountNumberInput.addEventListener('input', resetVerification);
+      // Any change to bank or account number invalidates a prior verification —
+      // force a fresh "Verify" click rather than letting a stale accountName
+      // slip through attached to a now-different bank/account combo.
+      function resetVerification() {
+        accountNameHidden.value = "";
+        bankCodeHidden.value = "";
+        bankNameHidden.value = "";
+        accountVerifyHint.textContent =
+          "This is the account customer payments for this vendor's food will be paid out to. It must be verified before the vendor can be added.";
+        accountVerifyHint.style.color = "#888";
+      }
+      bankSelect.addEventListener("change", resetVerification);
+      accountNumberInput.addEventListener("input", resetVerification);
 
-  verifyAccountBtn.addEventListener('click', async () => {
-    const bankCode = bankSelect.value;
-    const accountNumber = accountNumberInput.value.trim();
+      verifyAccountBtn.addEventListener("click", async () => {
+        const bankCode = bankSelect.value;
+        const accountNumber = accountNumberInput.value.trim();
 
-    if (!bankCode) {
-      accountVerifyHint.textContent = 'Select a bank first.';
-      accountVerifyHint.style.color = '#b3261e';
-      return;
-    }
-    if (!/^\d{10}$/.test(accountNumber)) {
-      accountVerifyHint.textContent = 'Account number must be 10 digits.';
-      accountVerifyHint.style.color = '#b3261e';
-      return;
-    }
+        if (!bankCode) {
+          accountVerifyHint.textContent = "Select a bank first.";
+          accountVerifyHint.style.color = "#b3261e";
+          return;
+        }
+        if (!/^\d{10}$/.test(accountNumber)) {
+          accountVerifyHint.textContent = "Account number must be 10 digits.";
+          accountVerifyHint.style.color = "#b3261e";
+          return;
+        }
 
-    verifyAccountBtn.disabled = true;
-    verifyAccountBtn.textContent = 'Verifying…';
-    try {
-      const res = await fetch('/admin/api/verify-account', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ bankCode, accountNumber })
+        verifyAccountBtn.disabled = true;
+        verifyAccountBtn.textContent = "Verifying…";
+        try {
+          const res = await fetch("/admin/api/verify-account", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ bankCode, accountNumber }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || "Verification failed");
+
+          accountNameHidden.value = data.accountName;
+          bankCodeHidden.value = bankCode;
+          bankNameHidden.value =
+            bankSelect.options[bankSelect.selectedIndex].text;
+          accountVerifyHint.textContent = "✅ Verified: " + data.accountName;
+          accountVerifyHint.style.color = "#1a7f37";
+        } catch (err) {
+          accountVerifyHint.textContent = "❌ " + err.message;
+          accountVerifyHint.style.color = "#b3261e";
+        } finally {
+          verifyAccountBtn.disabled = false;
+          verifyAccountBtn.textContent = "Verify";
+        }
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Verification failed');
 
-      accountNameHidden.value = data.accountName;
-      bankCodeHidden.value = bankCode;
-      bankNameHidden.value = bankSelect.options[bankSelect.selectedIndex].text;
-      accountVerifyHint.textContent = '✅ Verified: ' + data.accountName;
-      accountVerifyHint.style.color = '#1a7f37';
-    } catch (err) {
-      accountVerifyHint.textContent = '❌ ' + err.message;
-      accountVerifyHint.style.color = '#b3261e';
-    } finally {
-      verifyAccountBtn.disabled = false;
-      verifyAccountBtn.textContent = 'Verify';
-    }
-  });
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        messageEl.className = "";
 
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    messageEl.className = '';
+        // Block submission until the payout account has actually been verified
+        // for the current bank + account number on the form.
+        if (!accountNameHidden.value) {
+          showMessage(
+            messageEl,
+            "❌ Please verify the vendor's bank account before submitting.",
+            true,
+          );
+          return;
+        }
 
-    // Block submission until the payout account has actually been verified
-    // for the current bank + account number on the form.
-    if (!accountNameHidden.value) {
-      showMessage(messageEl, "❌ Please verify the vendor's bank account before submitting.", true);
-      return;
-    }
+        submitBtn.disabled = true;
+        submitBtn.textContent = "Adding…";
 
-    submitBtn.disabled = true;
-    submitBtn.textContent = 'Adding…';
+        const payload = {
+          contactName: document.getElementById("contactName").value.trim(),
+          restaurantName: document
+            .getElementById("restaurantName")
+            .value.trim(),
+          whatsappNumber: document
+            .getElementById("whatsappNumber")
+            .value.trim(),
+          email: document.getElementById("email").value.trim(),
+          address: document.getElementById("address").value.trim(),
+          latitude: document.getElementById("latitude").value.trim(),
+          longitude: document.getElementById("longitude").value.trim(),
+          bankCode: bankCodeHidden.value,
+          bankName: bankNameHidden.value,
+          accountNumber: accountNumberInput.value.trim(),
+          accountName: accountNameHidden.value,
+          menu: document.getElementById("menu").value.trim(),
+          openingHours: document.getElementById("openingHours").value.trim(),
+          status: document.getElementById("status").value,
+        };
 
-    const payload = {
-      contactName: document.getElementById('contactName').value.trim(),
-      restaurantName: document.getElementById('restaurantName').value.trim(),
-      whatsappNumber: document.getElementById('whatsappNumber').value.trim(),
-      email: document.getElementById('email').value.trim(),
-      address: document.getElementById('address').value.trim(),
-      latitude: document.getElementById('latitude').value.trim(),
-      longitude: document.getElementById('longitude').value.trim(),
-      bankCode: bankCodeHidden.value,
-      bankName: bankNameHidden.value,
-      accountNumber: accountNumberInput.value.trim(),
-      accountName: accountNameHidden.value,
-      menu: document.getElementById('menu').value.trim(),
-      openingHours: document.getElementById('openingHours').value.trim(),
-      status: document.getElementById('status').value
-    };
+        try {
+          const res = await fetch("/admin/api/vendors", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || "Failed to add vendor");
 
-    try {
-      const res = await fetch('/admin/api/vendors', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+          const menuNote =
+            data.menuItemCount > 0
+              ? ` Menu (${data.menuItemCount} item${data.menuItemCount === 1 ? "" : "s"}) is live.`
+              : " No menu added yet — the restaurant won't appear to customers until one is added.";
+          showMessage(
+            messageEl,
+            "✅ Vendor added and notified on WhatsApp." + menuNote,
+            false,
+          );
+          form.reset();
+          document.getElementById("status").value = "active";
+          resetVerification();
+          loadVendors();
+        } catch (err) {
+          showMessage(messageEl, "❌ " + err.message, true);
+        } finally {
+          submitBtn.disabled = false;
+          submitBtn.textContent = "Add Vendor";
+        }
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to add vendor');
 
-      const menuNote = data.menuItemCount > 0
-        ? ` Menu (${data.menuItemCount} item${data.menuItemCount === 1 ? '' : 's'}) is live.`
-        : ' No menu added yet — the restaurant won\'t appear to customers until one is added.';
-      showMessage(messageEl, '✅ Vendor added and notified on WhatsApp.' + menuNote, false);
-      form.reset();
-      document.getElementById('status').value = 'active';
-      resetVerification();
+      // --- Add Driver ------------------------------------------------------
+
+      const driverForm = document.getElementById("driverForm");
+      const driverMessageEl = document.getElementById("driverMessage");
+      const driverSubmitBtn = document.getElementById("driverSubmitBtn");
+      const driverListWrap = document.getElementById("driverListWrap");
+      const driverPhotoInput = document.getElementById("driverPhoto");
+
+      // Reads the chosen file (if any) as a base64 data URL so it can travel in
+      // the same JSON POST as the rest of the form — no multipart/form-data or
+      // extra upload endpoint needed. See POST /admin/api/drivers on the server,
+      // which decodes this and hands it to dispatch.uploadDriverPhoto.
+      function readFileAsDataUrl(file) {
+        return new Promise((resolve, reject) => {
+          if (!file) return resolve(null);
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = () =>
+            reject(new Error("Could not read the selected photo."));
+          reader.readAsDataURL(file);
+        });
+      }
+
+      async function loadDrivers() {
+        try {
+          const res = await fetch("/admin/api/drivers");
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || "Failed to load drivers");
+          renderDrivers(data.drivers || []);
+        } catch (err) {
+          driverListWrap.innerHTML =
+            '<p class="empty">Could not load drivers: ' +
+            escapeHtml(err.message) +
+            "</p>";
+        }
+      }
+
+      function renderDrivers(drivers) {
+        if (!drivers.length) {
+          driverListWrap.innerHTML =
+            '<p class="empty">No drivers added yet.</p>';
+          return;
+        }
+        const rows = drivers
+          .map((d) => {
+            const isActive = (d.is_active ?? d.isActive ?? true) !== false;
+            const isOnline = (d.is_online ?? d.isOnline ?? false) === true;
+            const photoCell = d.photo_url
+              ? '<img class="avatar" src="' +
+                escapeHtml(d.photo_url) +
+                '" alt="" />'
+              : '<span class="empty">No photo</span>';
+            return (
+              "<tr>" +
+              "<td>" +
+              photoCell +
+              "</td>" +
+              "<td>" +
+              escapeHtml(d.name) +
+              "</td>" +
+              "<td>" +
+              escapeHtml(d.phone) +
+              "</td>" +
+              "<td>" +
+              escapeHtml(d.vehicle_type || "") +
+              "</td>" +
+              '<td><span class="badge ' +
+              (isActive ? "active" : "inactive") +
+              '">' +
+              (isActive ? "Active" : "Inactive") +
+              "</span></td>" +
+              '<td><span class="badge ' +
+              (isOnline ? "active" : "inactive") +
+              '">' +
+              (isOnline ? "Online" : "Offline") +
+              "</span></td>" +
+              "</tr>"
+            );
+          })
+          .join("");
+        driverListWrap.innerHTML =
+          "<table><thead><tr>" +
+          "<th>Photo</th><th>Name</th><th>WhatsApp</th><th>Vehicle</th><th>Status</th><th>Availability</th>" +
+          "</tr></thead><tbody>" +
+          rows +
+          "</tbody></table>";
+      }
+
+      driverForm.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        driverMessageEl.className = "";
+
+        driverSubmitBtn.disabled = true;
+        driverSubmitBtn.textContent = "Adding…";
+
+        try {
+          const photoFile = driverPhotoInput.files && driverPhotoInput.files[0];
+          const photoDataUrl = await readFileAsDataUrl(photoFile);
+
+          const payload = {
+            name: document.getElementById("driverName").value.trim(),
+            whatsappNumber: document
+              .getElementById("driverWhatsappNumber")
+              .value.trim(),
+            vehicleType: document.getElementById("vehicleType").value,
+            status: document.getElementById("driverStatus").value,
+            photo: photoDataUrl || undefined,
+          };
+
+          const res = await fetch("/admin/api/drivers", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || "Failed to add driver");
+
+          showMessage(
+            driverMessageEl,
+            "✅ Driver added and notified on WhatsApp.",
+            false,
+          );
+          driverForm.reset();
+          document.getElementById("driverStatus").value = "active";
+          loadDrivers();
+        } catch (err) {
+          showMessage(driverMessageEl, "❌ " + err.message, true);
+        } finally {
+          driverSubmitBtn.disabled = false;
+          driverSubmitBtn.textContent = "Add Driver";
+        }
+      });
+
+      // --- Stats dashboard -------------------------------------------------
+
+      const statActiveUsers = document.getElementById("statActiveUsers");
+      const statTodayTotal = document.getElementById("statTodayTotal");
+      const statTodayCount = document.getElementById("statTodayCount");
+      const statAllTimeTotal = document.getElementById("statAllTimeTotal");
+      const statAllTimeCount = document.getElementById("statAllTimeCount");
+
+      function formatNaira(amount) {
+        return "₦" + (Number(amount) || 0).toLocaleString("en-US");
+      }
+
+      async function loadStats() {
+        try {
+          const res = await fetch("/admin/api/stats");
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || "Failed to load stats");
+
+          statActiveUsers.textContent = data.activeUsers ?? "—";
+          statTodayTotal.textContent = formatNaira(data.today?.total);
+          statTodayCount.textContent = `${data.today?.count ?? 0} order${(data.today?.count ?? 0) === 1 ? "" : "s"} today`;
+          statAllTimeTotal.textContent = formatNaira(data.allTime?.total);
+          statAllTimeCount.textContent = `${data.allTime?.count ?? 0} order${(data.allTime?.count ?? 0) === 1 ? "" : "s"} total`;
+        } catch (err) {
+          statActiveUsers.textContent = "—";
+          statTodayTotal.textContent = "—";
+          statTodayCount.textContent = err.message;
+          statAllTimeTotal.textContent = "—";
+          statAllTimeCount.textContent = "";
+        }
+      }
+
+      loadBanks();
       loadVendors();
-    } catch (err) {
-      showMessage(messageEl, '❌ ' + err.message, true);
-    } finally {
-      submitBtn.disabled = false;
-      submitBtn.textContent = 'Add Vendor';
-    }
-  });
-
-  // --- Add Driver ------------------------------------------------------
-
-  const driverForm = document.getElementById('driverForm');
-  const driverMessageEl = document.getElementById('driverMessage');
-  const driverSubmitBtn = document.getElementById('driverSubmitBtn');
-  const driverListWrap = document.getElementById('driverListWrap');
-  const driverPhotoInput = document.getElementById('driverPhoto');
-
-  // Reads the chosen file (if any) as a base64 data URL so it can travel in
-  // the same JSON POST as the rest of the form — no multipart/form-data or
-  // extra upload endpoint needed. See POST /admin/api/drivers on the server,
-  // which decodes this and hands it to dispatch.uploadDriverPhoto.
-  function readFileAsDataUrl(file) {
-    return new Promise((resolve, reject) => {
-      if (!file) return resolve(null);
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = () => reject(new Error('Could not read the selected photo.'));
-      reader.readAsDataURL(file);
-    });
-  }
-
-  async function loadDrivers() {
-    try {
-      const res = await fetch('/admin/api/drivers');
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to load drivers');
-      renderDrivers(data.drivers || []);
-    } catch (err) {
-      driverListWrap.innerHTML = '<p class="empty">Could not load drivers: ' + escapeHtml(err.message) + '</p>';
-    }
-  }
-
-  function renderDrivers(drivers) {
-    if (!drivers.length) {
-      driverListWrap.innerHTML = '<p class="empty">No drivers added yet.</p>';
-      return;
-    }
-    const rows = drivers.map((d) => {
-      const isActive = (d.is_active ?? d.isActive ?? true) !== false;
-      const isOnline = (d.is_online ?? d.isOnline ?? false) === true;
-      const photoCell = d.photo_url
-        ? '<img class="avatar" src="' + escapeHtml(d.photo_url) + '" alt="" />'
-        : '<span class="empty">No photo</span>';
-      return '<tr>'
-        + '<td>' + photoCell + '</td>'
-        + '<td>' + escapeHtml(d.name) + '</td>'
-        + '<td>' + escapeHtml(d.phone) + '</td>'
-        + '<td>' + escapeHtml(d.vehicle_type || '') + '</td>'
-        + '<td><span class="badge ' + (isActive ? 'active' : 'inactive') + '">' + (isActive ? 'Active' : 'Inactive') + '</span></td>'
-        + '<td><span class="badge ' + (isOnline ? 'active' : 'inactive') + '">' + (isOnline ? 'Online' : 'Offline') + '</span></td>'
-        + '</tr>';
-    }).join('');
-    driverListWrap.innerHTML = '<table><thead><tr>'
-      + '<th>Photo</th><th>Name</th><th>WhatsApp</th><th>Vehicle</th><th>Status</th><th>Availability</th>'
-      + '</tr></thead><tbody>' + rows + '</tbody></table>';
-  }
-
-  driverForm.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    driverMessageEl.className = '';
-
-    driverSubmitBtn.disabled = true;
-    driverSubmitBtn.textContent = 'Adding…';
-
-    try {
-      const photoFile = driverPhotoInput.files && driverPhotoInput.files[0];
-      const photoDataUrl = await readFileAsDataUrl(photoFile);
-
-      const payload = {
-        name: document.getElementById('driverName').value.trim(),
-        whatsappNumber: document.getElementById('driverWhatsappNumber').value.trim(),
-        vehicleType: document.getElementById('vehicleType').value,
-        status: document.getElementById('driverStatus').value,
-        photo: photoDataUrl || undefined
-      };
-
-      const res = await fetch('/admin/api/drivers', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to add driver');
-
-      showMessage(driverMessageEl, '✅ Driver added and notified on WhatsApp.', false);
-      driverForm.reset();
-      document.getElementById('driverStatus').value = 'active';
       loadDrivers();
-    } catch (err) {
-      showMessage(driverMessageEl, '❌ ' + err.message, true);
-    } finally {
-      driverSubmitBtn.disabled = false;
-      driverSubmitBtn.textContent = 'Add Driver';
-    }
-  });
-
-  // --- Stats dashboard -------------------------------------------------
-
-  const statActiveUsers = document.getElementById('statActiveUsers');
-  const statTodayTotal = document.getElementById('statTodayTotal');
-  const statTodayCount = document.getElementById('statTodayCount');
-  const statAllTimeTotal = document.getElementById('statAllTimeTotal');
-  const statAllTimeCount = document.getElementById('statAllTimeCount');
-
-  function formatNaira(amount) {
-    return '₦' + (Number(amount) || 0).toLocaleString('en-US');
-  }
-
-  async function loadStats() {
-    try {
-      const res = await fetch('/admin/api/stats');
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to load stats');
-
-      statActiveUsers.textContent = data.activeUsers ?? '—';
-      statTodayTotal.textContent = formatNaira(data.today?.total);
-      statTodayCount.textContent = `${data.today?.count ?? 0} order${(data.today?.count ?? 0) === 1 ? '' : 's'} today`;
-      statAllTimeTotal.textContent = formatNaira(data.allTime?.total);
-      statAllTimeCount.textContent = `${data.allTime?.count ?? 0} order${(data.allTime?.count ?? 0) === 1 ? '' : 's'} total`;
-    } catch (err) {
-      statActiveUsers.textContent = '—';
-      statTodayTotal.textContent = '—';
-      statTodayCount.textContent = err.message;
-      statAllTimeTotal.textContent = '—';
-      statAllTimeCount.textContent = '';
-    }
-  }
-
-  loadBanks();
-  loadVendors();
-  loadDrivers();
-  loadStats();
-  // Refresh stats periodically so "active users" and today's totals stay
-  // current without requiring a manual page reload.
-  setInterval(loadStats, 30000);
-</script>
-</body>
+      loadStats();
+      // Refresh stats periodically so "active users" and today's totals stay
+      // current without requiring a manual page reload.
+      setInterval(loadStats, 30000);
+    </script>
+  </body>
 </html>
