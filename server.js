@@ -83,6 +83,7 @@ const {
   isValidWhatsAppPayload,
   looksLikeOrderRequest,
   buildVendorWelcomeMessage,
+  shouldProcessIncomingWebhookMessage,
 } = require("./lib/utils");
 
 const createDatabase = require("./lib/database");
@@ -812,6 +813,7 @@ setupWebhookRoutes(app, {
   crypto,
   isValidWhatsAppPayload,
   handleIncomingMessage,
+  shouldProcessIncomingWebhookMessage,
   handlePaystackChargeSuccess,
   buildPaymentSuccessPage,
   supabase,
