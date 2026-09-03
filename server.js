@@ -84,6 +84,7 @@ const {
   looksLikeOrderRequest,
   buildVendorWelcomeMessage,
   shouldProcessIncomingWebhookMessage,
+  hasMenuContent,
 } = require("./lib/utils");
 
 const createDatabase = require("./lib/database");
@@ -157,6 +158,7 @@ const stageHandlers = createStageHandlers({
   isLikelyValidAddress,
   mapMoodToCategory,
   buildMoodReply,
+  hasMenuContent,
   buildVendorMenuReply,
   handleBrowseRestaurants,
   saveProfile,
