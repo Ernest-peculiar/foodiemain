@@ -15,18 +15,16 @@ test("getRegisteredVendors includes vendors whose menu is stored in menu_items o
   const supabase = {
     from: () => ({
       select: () => ({
-        not: () => ({
-          data: [
-            {
-              name: "Dukes",
-              menu: null,
-              menu_items: [{ title: "Jollof Rice", price: 2500 }],
-              is_active: true,
-              is_open: true,
-            },
-          ],
-          error: null,
-        }),
+        data: [
+          {
+            name: "Dukes",
+            menu: null,
+            menu_items: [{ title: "Jollof Rice", price: 2500 }],
+            is_active: true,
+            is_open: true,
+          },
+        ],
+        error: null,
       }),
     }),
   };
@@ -36,4 +34,29 @@ test("getRegisteredVendors includes vendors whose menu is stored in menu_items o
 
   assert.equal(vendors.length, 1);
   assert.equal(vendors[0].name, "Dukes");
+});
+
+test("getRegisteredVendors does not drop menu_items-only vendors during the DB query", async () => {
+  const supabase = {
+    from: () => ({
+      select: () => ({
+        data: [
+          {
+            name: "Bistro 77",
+            menu: null,
+            menu_items: [{ title: "Pasta", price: 3000 }],
+            is_active: true,
+            is_open: true,
+          },
+        ],
+        error: null,
+      }),
+    }),
+  };
+
+  const db = createDatabase(supabase, new Map(), new Map());
+  const vendors = await db.getRegisteredVendors();
+
+  assert.equal(vendors.length, 1);
+  assert.equal(vendors[0].name, "Bistro 77");
 });
