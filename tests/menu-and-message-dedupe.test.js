@@ -5,7 +5,10 @@ const {
 } = require("../lib/utils");
 
 assert.strictEqual(hasMenuContent({ menu: "Rice & Beans - 1500" }), true);
-assert.strictEqual(hasMenuContent({ menu_items: [{ name: "Plantain" }] }), true);
+assert.strictEqual(
+  hasMenuContent({ menu_items: [{ name: "Plantain" }] }),
+  true,
+);
 assert.strictEqual(hasMenuContent({ menu: "" }), false);
 assert.strictEqual(hasMenuContent({ menu_items: [] }), false);
 
