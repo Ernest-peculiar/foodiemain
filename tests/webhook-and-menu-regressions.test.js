@@ -98,6 +98,27 @@ FANTA - 500`;
   assert.equal(items[3].price, 500);
 });
 
+test("menu list splits long item sets into multiple WhatsApp sections", () => {
+  const ui = createUIHelpers({
+    MOOD_CATALOG: {},
+    PUBLIC_URL: "https://example.com",
+  });
+  const items = Array.from({ length: 25 }, (_, idx) => ({
+    title: `Item ${idx + 1}`,
+    name: `Item ${idx + 1}`,
+    price: 1000 + idx,
+    available: true,
+  }));
+
+  const reply = ui.getVendorMenuListReply(items, "Menu");
+  const sections = reply.interactive.action.sections;
+
+  assert.equal(sections.length, 3);
+  assert.equal(sections[0].rows.length, 10);
+  assert.equal(sections[1].rows.length, 10);
+  assert.equal(sections[2].rows.length, 5);
+});
+
 test("restaurant order flow accepts menu_items-only vendors", async () => {
   const vendorRecord = {
     id: "ven_123",
