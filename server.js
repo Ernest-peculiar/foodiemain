@@ -120,6 +120,7 @@ const {
   getDriverPickedUpButtonsReply,
   getCustomerConfirmDeliveryButtonsReply,
   getRegisteredVendorListReply,
+  getPreviousLocationsListReply,
   getVendorMenuListReply,
   parseVendorMenu,
   makeItemId,
@@ -163,12 +164,14 @@ const stageHandlers = createStageHandlers({
   buildVendorMenuReply,
   handleBrowseRestaurants,
   saveProfile,
+  getProfile,
   askGrok,
   parseVendorMenu,
   makeItemId,
   createPaystackTransaction,
   DELIVERY_FEE,
   getMoodButtonsReply,
+  getPreviousLocationsListReply,
   getVendorMenuListReply,
   getHungryButtonsReply,
   getNewUserButtonsReply,
@@ -462,6 +465,57 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
 
   if (!combo || !vendor || !qty) return handleOrderNow();
 
+  const previousLocations = Array.isArray(session.previousLocations)
+    ? session.previousLocations
+    : [];
+
+  if (text === "new_address") {
+    return {
+      replies: {
+        type: "text",
+        body: `Please type your *exact delivery address* — street name, house number or a nearby landmark, and the area.`,
+      },
+      nextStage: STAGES.ORDER_AWAIT_ADDRESS,
+      sessionData: {
+        selectedVendor: vendor,
+        selectedComboIdx: session.selectedComboIdx,
+        qty,
+        menuItems,
+        previousLocations,
+      },
+    };
+  }
+
+  if (text.startsWith("prev_location_")) {
+    const idx = Number.parseInt(text.replace("prev_location_", ""), 10);
+    const chosenAddress = previousLocations[idx];
+
+    if (!chosenAddress) {
+      return {
+        replies: {
+          type: "text",
+          body: `Please tap one of the previous locations above or type a new address.`,
+        },
+        nextStage: STAGES.ORDER_AWAIT_ADDRESS,
+        sessionData: {
+          selectedVendor: vendor,
+          selectedComboIdx: session.selectedComboIdx,
+          qty,
+          menuItems,
+          previousLocations,
+        },
+      };
+    }
+
+    return handleOrderAwaitAddress(
+      chosenAddress,
+      name,
+      session,
+      shortName,
+      phone,
+    );
+  }
+
   if (!isLikelyValidAddress(text)) {
     return {
       replies: {
@@ -474,11 +528,27 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
         selectedComboIdx: session.selectedComboIdx,
         qty,
         menuItems,
+        previousLocations,
       },
     };
   }
 
   const address = text.trim();
+  const addressHistory = [
+    ...new Set(
+      [
+        ...(Array.isArray(session.previousLocations)
+          ? session.previousLocations
+          : []),
+        address,
+      ]
+        .map((loc) => String(loc || "").trim())
+        .filter(Boolean),
+    ),
+  ].slice(0, 5);
+
+  await saveProfile(phone, { previousLocations: addressHistory });
+
   const email =
     parseEmail(text) ||
     `${name.replace(/\s+/g, ".").toLowerCase()}@example.com`;
