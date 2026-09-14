@@ -12,6 +12,7 @@ const reply = ui.getPreviousLocationsListReply([
 
 assert.ok(reply && reply.type === "interactive");
 assert.strictEqual(reply.interactive.type, "list");
+assert.strictEqual(reply.interactive.body.text, "Choose a delivery location");
 assert.strictEqual(
   reply.interactive.action.sections[0].rows[0].id,
   "prev_location_0",
@@ -19,6 +20,10 @@ assert.strictEqual(
 assert.strictEqual(
   reply.interactive.action.sections[0].rows[0].title,
   "12 Ogoja Rd, Abakaliki",
+);
+assert.strictEqual(
+  reply.interactive.action.sections[0].rows[0].description,
+  "Use this address",
 );
 assert.strictEqual(
   reply.interactive.action.sections[0].rows[2].id,
