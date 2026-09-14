@@ -444,7 +444,9 @@ function buildVendorMenuReply(vendorRecord, introText) {
   return {
     replies: [
       { type: "text", body: introText },
-      getVendorMenuListReply(menuItems, `Menu for ${vendor.name}`),
+      ...[].concat(
+        getVendorMenuListReply(menuItems, `Menu for ${vendor.name}`),
+      ),
     ],
     nextStage: STAGES.ORDER_SELECT_COMBO,
     sessionData: { selectedVendor: vendor, menuItems },

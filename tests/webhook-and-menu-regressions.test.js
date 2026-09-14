@@ -98,7 +98,7 @@ FANTA - 500`;
   assert.equal(items[3].price, 500);
 });
 
-test("menu list splits long item sets into multiple WhatsApp sections", () => {
+test("menu list paginates long item sets into separate WhatsApp messages", () => {
   const ui = createUIHelpers({
     MOOD_CATALOG: {},
     PUBLIC_URL: "https://example.com",
@@ -110,13 +110,15 @@ test("menu list splits long item sets into multiple WhatsApp sections", () => {
     available: true,
   }));
 
-  const reply = ui.getVendorMenuListReply(items, "Menu");
-  const sections = reply.interactive.action.sections;
+  const replies = ui.getVendorMenuListReply(items, "Menu");
 
-  assert.equal(sections.length, 3);
-  assert.equal(sections[0].rows.length, 10);
-  assert.equal(sections[1].rows.length, 10);
-  assert.equal(sections[2].rows.length, 5);
+  assert.equal(replies.length, 3);
+  assert.deepEqual(
+    replies.map((reply) => reply.interactive.action.sections[0].rows.length),
+    [10, 10, 5],
+  );
+  assert.equal(replies[0].interactive.body.text, "Menu (Menu 1/3)");
+  assert.equal(replies[2].interactive.action.sections[0].rows[0].id, "item_20");
 });
 
 test("restaurant order flow accepts menu_items-only vendors", async () => {
