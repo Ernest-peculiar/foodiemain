@@ -389,7 +389,9 @@ async function transcribeWhatsAppAudio(audio) {
       if (!transcriptionResponse.ok) {
         console.error(
           `Voice transcription failed with ${model}:`,
-          transcription.error?.message || responseBody || transcriptionResponse.status,
+          transcription.error?.message ||
+            responseBody ||
+            transcriptionResponse.status,
         );
         continue;
       }
