@@ -884,6 +884,15 @@ async function handleIncomingMessage(message, value) {
   const senderName = value.contacts?.[0]?.profile?.name || "Foodie friend";
   const session = await getSession(from);
 
+  if (message.type === "sticker") {
+    await logMessage(from, "inbound", "sticker", "[sticker]", message);
+    await sendWhatsAppMessage(from, {
+      type: "text",
+      body: "I got your sticker 😂 Send me the food you want, or send a voice note.",
+    });
+    return;
+  }
+
   let result;
 
   const role = await resolveSenderRole(from);
