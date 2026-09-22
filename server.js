@@ -452,18 +452,23 @@ function buildVendorMenuReply(vendorRecord, introText) {
       ),
     ],
     nextStage: STAGES.ORDER_SELECT_COMBO,
-    sessionData: { selectedVendor: vendor, menuItems },
+    sessionData: { selectedVendor: vendor, menuItems, cart: [] },
   };
 }
 
 // Handle order awaiting delivery address confirmation
 async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
   const menuItems = Array.isArray(session.menuItems) ? session.menuItems : [];
-  const combo = menuItems[session.selectedComboIdx];
+  const cart =
+    Array.isArray(session.cart) && session.cart.length
+      ? session.cart
+      : session.selectedComboIdx !== undefined
+        ? [{ itemIdx: session.selectedComboIdx, qty: session.qty || 1 }]
+        : [];
+  const combo = menuItems[cart[0]?.itemIdx];
   const vendor = session.selectedVendor;
-  const qty = session.qty;
 
-  if (!combo || !vendor || !qty) return handleOrderNow();
+  if (!combo || !vendor || !cart.length) return handleOrderNow();
 
   const previousLocations = Array.isArray(session.previousLocations)
     ? session.previousLocations
@@ -478,8 +483,7 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
       nextStage: STAGES.ORDER_AWAIT_ADDRESS,
       sessionData: {
         selectedVendor: vendor,
-        selectedComboIdx: session.selectedComboIdx,
-        qty,
+        cart,
         menuItems,
         previousLocations,
       },
@@ -499,8 +503,7 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
         nextStage: STAGES.ORDER_AWAIT_ADDRESS,
         sessionData: {
           selectedVendor: vendor,
-          selectedComboIdx: session.selectedComboIdx,
-          qty,
+          cart,
           menuItems,
           previousLocations,
         },
@@ -525,8 +528,7 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
       nextStage: STAGES.ORDER_AWAIT_ADDRESS,
       sessionData: {
         selectedVendor: vendor,
-        selectedComboIdx: session.selectedComboIdx,
-        qty,
+        cart,
         menuItems,
         previousLocations,
       },
@@ -552,12 +554,21 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
   const email =
     parseEmail(text) ||
     `${name.replace(/\s+/g, ".").toLowerCase()}@example.com`;
-  const unitPrice =
-    combo && (combo.price || combo.price === 0) ? Number(combo.price) : 0;
-  const subtotal = unitPrice * qty;
+  const orderItems = cart.map((item) => {
+    const menuItem = menuItems[item.itemIdx];
+    return {
+      title: menuItem.title || menuItem.name,
+      qty: item.qty,
+      price: Number(menuItem.price) || 0,
+    };
+  });
+  const subtotal = orderItems.reduce(
+    (sum, item) => sum + item.price * item.qty,
+    0,
+  );
   const totalAmount = subtotal + DELIVERY_FEE;
 
-  if (unitPrice <= 0) {
+  if (orderItems.some((item) => item.price <= 0)) {
     return {
       replies: {
         type: "text",
@@ -580,7 +591,7 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
         isOpen: true,
       },
       restaurantName: vendor.name,
-      items: [{ title: combo.title || combo.name, qty, price: unitPrice }],
+      items: orderItems,
       subtotal,
       deliveryFee: DELIVERY_FEE,
       total: totalAmount,
@@ -645,7 +656,7 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
   return {
     replies: {
       type: "text",
-      body: `${qty} x *${combo.title || combo.name}* from *${vendor.name}*\nDeliver to: ${address}\nSubtotal: ₦${subtotal.toLocaleString("en-US")}\nDelivery fee: ₦${DELIVERY_FEE.toLocaleString("en-US")}\n*Total: ₦${totalAmount.toLocaleString("en-US")}*\n${paymentMessage}`,
+      body: `${orderItems.map((item) => `${item.qty} x *${item.title}*`).join("\n")} from *${vendor.name}*\nDeliver to: ${address}\nSubtotal: ₦${subtotal.toLocaleString("en-US")}\nDelivery fee: ₦${DELIVERY_FEE.toLocaleString("en-US")}\n*Total: ₦${totalAmount.toLocaleString("en-US")}*\n${paymentMessage}`,
     },
     nextStage: null,
   };

@@ -185,3 +185,65 @@ test("restaurant order flow accepts menu_items-only vendors", async () => {
   assert.equal(result.sessionData.selectedVendor.name, "Dukes");
   assert.equal(result.sessionData.menuItems.length, 1);
 });
+
+test("order cart keeps items selected from different menu pages", async () => {
+  const menuItems = Array.from({ length: 21 }, (_, idx) => ({
+    title: `Item ${idx + 1}`,
+    name: `Item ${idx + 1}`,
+    price: 1000 + idx,
+    available: true,
+  }));
+  const vendor = { name: "Dukes", id: "ven_123", phone: "2348012345678" };
+  const stageHandlers = createStageHandlers({
+    STAGES: {
+      ORDER_SELECT_COMBO: "order_select_combo",
+      ORDER_ENTER_QTY: "order_enter_qty",
+      ORDER_AWAIT_ADDRESS: "order_await_address",
+    },
+    STAGE_LABELS: {},
+    MOOD_KEYWORDS: {},
+    MOOD_CATALOG: {},
+    getVendorMenuListReply: (items) => ({
+      type: "menu",
+      itemCount: items.length,
+    }),
+    getPreviousLocationsListReply: () => null,
+    getProfile: async () => ({}),
+  });
+  const session = { selectedVendor: vendor, menuItems, cart: [] };
+
+  const firstSelection = await stageHandlers.handleOrderSelectCombo(
+    "item_0",
+    "Jane",
+    session,
+  );
+  const afterFirst = await stageHandlers.handleOrderEnterQty(
+    "2",
+    "Jane",
+    { ...session, ...firstSelection.sessionData },
+    "Jane",
+    "2348000000000",
+  );
+  const secondSelection = await stageHandlers.handleOrderSelectCombo(
+    "item_20",
+    "Jane",
+    { ...session, ...afterFirst.sessionData },
+  );
+  const afterSecond = await stageHandlers.handleOrderEnterQty(
+    "3",
+    "Jane",
+    { ...session, ...afterFirst.sessionData, ...secondSelection.sessionData },
+    "Jane",
+    "2348000000000",
+  );
+
+  assert.equal(afterSecond.nextStage, "order_select_combo");
+  assert.deepEqual(afterSecond.sessionData.cart, [
+    { itemIdx: 0, title: "Item 1", price: 1000, qty: 2 },
+    { itemIdx: 20, title: "Item 21", price: 1020, qty: 3 },
+  ]);
+  assert.equal(
+    afterSecond.replies.at(-1).interactive.action.buttons[0].reply.id,
+    "done_selecting",
+  );
+});
