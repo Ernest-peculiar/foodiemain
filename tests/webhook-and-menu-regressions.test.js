@@ -244,6 +244,18 @@ test("order cart keeps items selected from different menu pages", async () => {
   ]);
   assert.equal(
     afterSecond.replies.at(-1).interactive.action.buttons[0].reply.id,
+    "add_another_item",
+  );
+  assert.equal(
+    afterSecond.replies.at(-1).interactive.action.buttons[1].reply.id,
     "done_selecting",
   );
+
+  const addAnother = await stageHandlers.handleOrderSelectCombo(
+    "add_another_item",
+    "Jane",
+    afterSecond.sessionData,
+  );
+  assert.equal(addAnother.nextStage, "order_select_combo");
+  assert.equal(addAnother.replies[1].type, "menu");
 });
