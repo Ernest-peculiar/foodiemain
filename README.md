@@ -24,6 +24,19 @@ Configure your Meta app webhook to point to:
 - Callback URL: https://your-domain.com/webhook
 - Verify Token: the value in VERIFY_TOKEN
 
+## Voice notes
+Users can send voice notes as orders. The bot downloads the WhatsApp audio,
+transcribes it with OpenAI Whisper, and sends the transcript through the normal
+ordering flow. Add these variables to `.env` to enable it:
+
+```text
+OPENAI_API_KEY=your-openai-api-key
+OPENAI_TRANSCRIPTION_MODEL=whisper-1
+```
+
+If `OPENAI_API_KEY` is missing, text ordering continues to work and voice notes
+receive a configuration message instead.
+
 ## Next steps
 - Add a multi-step conversation flow
 - Connect restaurant/vendor data

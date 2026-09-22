@@ -33,6 +33,9 @@ const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const WHATSAPP_API_VERSION = process.env.WHATSAPP_API_VERSION || "v22.0";
 const GROK_API_KEY = process.env.GROK_API_KEY;
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const OPENAI_TRANSCRIPTION_MODEL =
+  process.env.OPENAI_TRANSCRIPTION_MODEL || "whisper-1";
 const DEBUG = process.env.DEBUG === "true";
 const DELIVERY_FEE = Number(process.env.DELIVERY_FEE || 500);
 const ORDER_NOTIFY_NUMBER = process.env.ORDER_NOTIFY_NUMBER;
@@ -300,6 +303,69 @@ async function sendWhatsAppMessage(toPhone, message) {
     return result.messages?.[0]?.id || null;
   } catch (error) {
     console.error("WhatsApp send failed:", error.message);
+    return null;
+  }
+}
+
+async function transcribeWhatsAppAudio(audio) {
+  if (!OPENAI_API_KEY) {
+    console.warn("OPENAI_API_KEY is not configured; voice note ignored.");
+    return null;
+  }
+  if (!audio?.id || !WHATSAPP_TOKEN) return null;
+
+  try {
+    const mediaResponse = await fetch(
+      `https://graph.facebook.com/${WHATSAPP_API_VERSION}/${audio.id}`,
+      { headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` } },
+    );
+    if (!mediaResponse.ok) {
+      console.error("WhatsApp audio metadata request failed:", mediaResponse.status);
+      return null;
+    }
+
+    const media = await mediaResponse.json();
+    if (!media.url) return null;
+
+    const audioResponse = await fetch(media.url, {
+      headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
+    });
+    if (!audioResponse.ok) {
+      console.error("WhatsApp audio download failed:", audioResponse.status);
+      return null;
+    }
+
+    const form = new FormData();
+    form.append(
+      "file",
+      new Blob([await audioResponse.arrayBuffer()], {
+        type: audio.mime_type || media.mime_type || "audio/ogg",
+      }),
+      "voice-note.ogg",
+    );
+    form.append("model", OPENAI_TRANSCRIPTION_MODEL);
+    form.append("language", "en");
+
+    const transcriptionResponse = await fetch(
+      "https://api.openai.com/v1/audio/transcriptions",
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
+        body: form,
+      },
+    );
+    const transcription = await transcriptionResponse.json().catch(() => ({}));
+    if (!transcriptionResponse.ok) {
+      console.error(
+        "Voice transcription failed:",
+        transcription.error?.message || transcriptionResponse.status,
+      );
+      return null;
+    }
+
+    return String(transcription.text || "").trim() || null;
+  } catch (error) {
+    console.error("Voice transcription error:", error.message || error);
     return null;
   }
 }
@@ -751,6 +817,28 @@ async function buildReply(text, name = "friend", session = {}, phone) {
 
 // Handle incoming WhatsApp message
 async function handleIncomingMessage(message, value) {
+  const originalMessageType = message.type;
+  if (message.type === "audio") {
+    const transcript = await transcribeWhatsAppAudio(message.audio);
+    if (!transcript) {
+      if (message.from) {
+        await sendWhatsAppMessage(message.from, {
+          type: "text",
+          body: OPENAI_API_KEY
+            ? "Sorry, I could not understand that voice note. Please try again or type your order."
+            : "Voice ordering is not configured yet. Please type your order for now.",
+        });
+      }
+      return;
+    }
+    message = {
+      ...message,
+      type: "text",
+      text: { body: transcript },
+    };
+    if (DEBUG) console.log(`Voice note transcribed: ${transcript}`);
+  }
+
   const from = message.from;
   const senderName = value.contacts?.[0]?.profile?.name || "Foodie friend";
   const session = await getSession(from);
@@ -773,10 +861,16 @@ async function handleIncomingMessage(message, value) {
     : await handleVendorMenuCommands(text, from, session, supabase);
 
   if (registrationReply) {
-    await logMessage(from, "inbound", message.type || "text", text, message);
+    await logMessage(from, "inbound", originalMessageType || "text", text, message);
     result = registrationReply;
   } else if (menuManagementReply) {
-    await logMessage(from, "inbound", message.type || "text", text, message);
+    await logMessage(
+      from,
+      "inbound",
+      originalMessageType || "text",
+      text,
+      message,
+    );
     result = menuManagementReply;
   } else if (
     session.stage === "vendorAwaitName" ||
@@ -803,7 +897,13 @@ async function handleIncomingMessage(message, value) {
     };
   } else {
     if (DEBUG) console.log(`Message from ${from}: ${text}`);
-    await logMessage(from, "inbound", message.type || "text", text, message);
+    await logMessage(
+      from,
+      "inbound",
+      originalMessageType || "text",
+      text,
+      message,
+    );
 
     const availabilityReply = await handleAvailabilityCommands(
       text,
