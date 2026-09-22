@@ -35,7 +35,7 @@ const GROK_API_KEY = process.env.GROK_API_KEY;
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_TRANSCRIPTION_MODEL =
-  process.env.OPENAI_TRANSCRIPTION_MODEL || "whisper-1";
+  process.env.OPENAI_TRANSCRIPTION_MODEL || "gpt-4o-mini-transcribe";
 const DEBUG = process.env.DEBUG === "true";
 const DELIVERY_FEE = Number(process.env.DELIVERY_FEE || 500);
 const ORDER_NOTIFY_NUMBER = process.env.ORDER_NOTIFY_NUMBER;
@@ -347,7 +347,10 @@ async function transcribeWhatsAppAudio(audio) {
       "voice-note.ogg",
     );
     form.append("model", OPENAI_TRANSCRIPTION_MODEL);
-    form.append("language", "en");
+    form.append(
+      "prompt",
+      "Food order for a Nigerian restaurant. Food names may include jollof rice, fried rice, egusi soup, pounded yam, chicken, beef, fish, plantain, and drinks.",
+    );
 
     const transcriptionResponse = await fetch(
       "https://api.openai.com/v1/audio/transcriptions",
@@ -366,7 +369,10 @@ async function transcribeWhatsAppAudio(audio) {
       return null;
     }
 
-    return String(transcription.text || "").trim() || null;
+    const transcript = String(transcription.text || "").trim();
+    if (DEBUG)
+      console.log(`Voice transcription result: ${transcript || "(empty)"}`);
+    return transcript || null;
   } catch (error) {
     console.error("Voice transcription error:", error.message || error);
     return null;

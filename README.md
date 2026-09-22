@@ -36,7 +36,7 @@ ordering flow. Add these variables to `.env` to enable it:
 
 ```text
 OPENAI_API_KEY=your-openai-api-key
-OPENAI_TRANSCRIPTION_MODEL=whisper-1
+OPENAI_TRANSCRIPTION_MODEL=gpt-4o-mini-transcribe
 ```
 
 If `OPENAI_API_KEY` is missing, text ordering continues to work and voice notes
