@@ -312,9 +312,13 @@ async function transcribeWhatsAppAudio(audio) {
     console.warn("OPENAI_API_KEY is not configured; voice note ignored.");
     return null;
   }
-  if (!audio?.id || !WHATSAPP_TOKEN) return null;
+  if (!audio?.id || !WHATSAPP_TOKEN) {
+    console.error("Voice note is missing its WhatsApp media id or token.");
+    return null;
+  }
 
   try {
+    console.log(`Downloading WhatsApp voice note ${audio.id}...`);
     const mediaResponse = await fetch(
       `https://graph.facebook.com/${WHATSAPP_API_VERSION}/${audio.id}`,
       { headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` } },
@@ -328,7 +332,10 @@ async function transcribeWhatsAppAudio(audio) {
     }
 
     const media = await mediaResponse.json();
-    if (!media.url) return null;
+    if (!media.url) {
+      console.error("WhatsApp audio metadata did not include a media URL.");
+      return null;
+    }
 
     const audioResponse = await fetch(media.url, {
       headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
@@ -338,41 +345,64 @@ async function transcribeWhatsAppAudio(audio) {
       return null;
     }
 
-    const form = new FormData();
-    form.append(
-      "file",
-      new Blob([await audioResponse.arrayBuffer()], {
-        type: audio.mime_type || media.mime_type || "audio/ogg",
-      }),
-      "voice-note.ogg",
-    );
-    form.append("model", OPENAI_TRANSCRIPTION_MODEL);
-    form.append(
-      "prompt",
-      "Food order for a Nigerian restaurant. Food names may include jollof rice, fried rice, egusi soup, pounded yam, chicken, beef, fish, plantain, and drinks.",
-    );
+    const audioBuffer = await audioResponse.arrayBuffer();
+    const mimeType = audio.mime_type || media.mime_type || "audio/ogg";
+    const extension = mimeType.includes("mp4")
+      ? "m4a"
+      : mimeType.includes("webm")
+        ? "webm"
+        : "ogg";
+    const models = [
+      OPENAI_TRANSCRIPTION_MODEL,
+      ...(OPENAI_TRANSCRIPTION_MODEL === "whisper-1" ? [] : ["whisper-1"]),
+    ];
 
-    const transcriptionResponse = await fetch(
-      "https://api.openai.com/v1/audio/transcriptions",
-      {
-        method: "POST",
-        headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
-        body: form,
-      },
-    );
-    const transcription = await transcriptionResponse.json().catch(() => ({}));
-    if (!transcriptionResponse.ok) {
-      console.error(
-        "Voice transcription failed:",
-        transcription.error?.message || transcriptionResponse.status,
+    for (const model of models) {
+      const form = new FormData();
+      form.append(
+        "file",
+        new Blob([audioBuffer], { type: mimeType }),
+        `voice-note.${extension}`,
       );
-      return null;
+      form.append("model", model);
+      form.append(
+        "prompt",
+        "Food order for a Nigerian restaurant. Food names may include jollof rice, fried rice, egusi soup, pounded yam, chicken, beef, fish, plantain, and drinks.",
+      );
+
+      const transcriptionResponse = await fetch(
+        "https://api.openai.com/v1/audio/transcriptions",
+        {
+          method: "POST",
+          headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
+          body: form,
+        },
+      );
+      const responseBody = await transcriptionResponse.text();
+      let transcription = {};
+      try {
+        transcription = JSON.parse(responseBody);
+      } catch {
+        transcription = { text: responseBody };
+      }
+
+      if (!transcriptionResponse.ok) {
+        console.error(
+          `Voice transcription failed with ${model}:`,
+          transcription.error?.message || responseBody || transcriptionResponse.status,
+        );
+        continue;
+      }
+
+      const transcript = String(transcription.text || "").trim();
+      if (transcript) {
+        console.log(`Voice note transcribed with ${model}: ${transcript}`);
+        return transcript;
+      }
     }
 
-    const transcript = String(transcription.text || "").trim();
-    if (DEBUG)
-      console.log(`Voice transcription result: ${transcript || "(empty)"}`);
-    return transcript || null;
+    console.error("All configured voice transcription models failed.");
+    return null;
   } catch (error) {
     console.error("Voice transcription error:", error.message || error);
     return null;
