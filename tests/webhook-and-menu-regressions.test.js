@@ -207,7 +207,11 @@ test("order cart keeps items selected from different menu pages", async () => {
       type: "menu",
       itemCount: items.length,
     }),
-    getPreviousLocationsListReply: () => null,
+    getPreviousLocationsListReply: (locations, body) => ({
+      type: "address_list",
+      locations,
+      body,
+    }),
     getProfile: async () => ({}),
   });
   const session = { selectedVendor: vendor, menuItems, cart: [] };
@@ -250,6 +254,20 @@ test("order cart keeps items selected from different menu pages", async () => {
     afterSecond.replies.at(-1).interactive.action.buttons[1].reply.id,
     "done_selecting",
   );
+
+  const readyForAddress = await stageHandlers.handleOrderSelectCombo(
+    "done_selecting",
+    "Jane",
+    {
+      ...afterSecond.sessionData,
+      previousLocations: ["12 Ogoja Rd, Abakaliki"],
+    },
+  );
+  assert.equal(readyForAddress.nextStage, "order_await_address");
+  assert.equal(readyForAddress.replies[1].type, "address_list");
+  assert.deepEqual(readyForAddress.replies[1].locations, [
+    "12 Ogoja Rd, Abakaliki",
+  ]);
 
   const addAnother = await stageHandlers.handleOrderSelectCombo(
     "add_another_item",
