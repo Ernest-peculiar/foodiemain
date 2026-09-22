@@ -320,7 +320,10 @@ async function transcribeWhatsAppAudio(audio) {
       { headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` } },
     );
     if (!mediaResponse.ok) {
-      console.error("WhatsApp audio metadata request failed:", mediaResponse.status);
+      console.error(
+        "WhatsApp audio metadata request failed:",
+        mediaResponse.status,
+      );
       return null;
     }
 
@@ -861,7 +864,13 @@ async function handleIncomingMessage(message, value) {
     : await handleVendorMenuCommands(text, from, session, supabase);
 
   if (registrationReply) {
-    await logMessage(from, "inbound", originalMessageType || "text", text, message);
+    await logMessage(
+      from,
+      "inbound",
+      originalMessageType || "text",
+      text,
+      message,
+    );
     result = registrationReply;
   } else if (menuManagementReply) {
     await logMessage(
