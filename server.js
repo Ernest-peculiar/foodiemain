@@ -888,7 +888,7 @@ async function handleIncomingMessage(message, value) {
     await logMessage(from, "inbound", "sticker", "[sticker]", message);
     await sendWhatsAppMessage(from, {
       type: "text",
-      body: "I got your sticker 😂 Send me the food you want, or send a voice note.",
+      body: "I got your sticker 😂 Send me the food you want.",
     });
     return;
   }
