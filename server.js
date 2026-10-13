@@ -214,6 +214,7 @@ const dispatchHandlers = createDispatchHandlers({
   getVendorRecordByPhone,
   getDriverRecordByPhone,
   getVendorMenuManagementListReply: uiHelpers.getVendorMenuManagementListReply,
+  getDriverDeliveryButtonsReply,
   getDriverAcceptButtonsReply,
   getDriverPickedUpButtonsReply,
   getCustomerConfirmDeliveryButtonsReply,

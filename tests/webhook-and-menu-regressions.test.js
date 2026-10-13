@@ -7,6 +7,7 @@ const {
 const createDatabase = require("../lib/database");
 const createStageHandlers = require("../lib/handlers-stages");
 const createUIHelpers = require("../lib/helpers-ui");
+const createDispatchHandlers = require("../lib/handlers-dispatch");
 
 test("shouldProcessWhatsAppMessage ignores duplicate webhook delivery IDs", () => {
   const seen = new Map();
@@ -14,6 +15,63 @@ test("shouldProcessWhatsAppMessage ignores duplicate webhook delivery IDs", () =
   assert.equal(shouldProcessWhatsAppMessage({ id: "wamid_1" }, seen), true);
   assert.equal(shouldProcessWhatsAppMessage({ id: "wamid_1" }, seen), false);
   assert.equal(shouldProcessWhatsAppMessage({ id: "wamid_2" }, seen), true);
+});
+
+test("driver pickup confirms status and sends the next delivery button", async () => {
+  const sentMessages = [];
+  const handlers = createDispatchHandlers({
+    STAGES: { DRIVER_AWAIT_PHOTO: "driverAwaitPhoto" },
+    dispatch: {
+      markOrderPickedUp: async () => ({
+        id: "550e8400-e29b-41d4-a716-446655440000",
+        customer_phone: "2348012345678",
+      }),
+    },
+    getDriverRecordByPhone: async () => ({ id: "driver-1" }),
+    getDriverDeliveryButtonsReply: (orderId) => ({
+      type: "interactive",
+      orderId,
+    }),
+    sendWhatsAppMessage: async (...args) => sentMessages.push(args),
+  });
+
+  const result = await handlers.handleDispatchPayload(
+    "driver_picked_up_550e8400-e29b-41d4-a716-446655440000",
+    "2348012345678",
+    {},
+    {},
+  );
+
+  assert.equal(result.replies[0].body, "🚚 Order marked as picked up.");
+  assert.equal(result.replies[1].type, "interactive");
+  assert.equal(sentMessages.length, 1);
+  assert.equal(sentMessages[0][0], "2348012345678");
+});
+
+test("driver receives a retry message when the pickup update throws", async () => {
+  const originalError = console.error;
+  console.error = () => {};
+  const handlers = createDispatchHandlers({
+    STAGES: { DRIVER_AWAIT_PHOTO: "driverAwaitPhoto" },
+    dispatch: {
+      markOrderPickedUp: async () => {
+        throw new Error("database unavailable");
+      },
+    },
+    getDriverRecordByPhone: async () => ({ id: "driver-1" }),
+  });
+
+  try {
+    const result = await handlers.handleDispatchPayload(
+      "driver_picked_up_550e8400-e29b-41d4-a716-446655440000",
+      "2348012345678",
+      {},
+      {},
+    );
+    assert.match(result.replies.body, /tap Picked up again/);
+  } finally {
+    console.error = originalError;
+  }
 });
 
 test("getRegisteredVendors includes vendors whose menu is stored in menu_items only", async () => {
