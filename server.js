@@ -143,6 +143,7 @@ const paymentHandlers = createPaymentHandlers({
 });
 const {
   createPaystackTransaction,
+  calculateCustomerPayment,
   generateReceiptPNG,
   uploadWhatsAppMedia,
   buildPaymentSuccessPage,
@@ -686,6 +687,20 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
     };
   }
 
+  if (!vendor.paystack_subaccount_code) {
+    return {
+      replies: {
+        type: "text",
+        body: "This restaurant's payout account is not set up yet. Please choose another restaurant or try again later.",
+      },
+      nextStage: null,
+    };
+  }
+
+  const customerPayment = calculateCustomerPayment(totalAmount);
+  const customerTotal = customerPayment.total;
+  const platformShare = DELIVERY_FEE + customerPayment.processingFee;
+
   let orderRecord;
   try {
     orderRecord = await dispatch.createOrderRecord(supabase, {
@@ -702,7 +717,8 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
       items: orderItems,
       subtotal,
       deliveryFee: DELIVERY_FEE,
-      total: totalAmount,
+      paymentProcessingFee: customerPayment.processingFee,
+      total: customerTotal,
       deliveryAddress: address,
       status: "pending_payment",
     });
@@ -734,8 +750,12 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
   try {
     payment = await createPaystackTransaction(
       email,
-      totalAmount,
+      customerTotal,
       orderRecord.id,
+      {
+        subaccount: vendor.paystack_subaccount_code,
+        platformShare,
+      },
     );
   } catch (error) {
     console.error(
@@ -764,7 +784,7 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
   return {
     replies: {
       type: "text",
-      body: `${orderItems.map((item) => `${item.qty} x *${item.title}*`).join("\n")} from *${vendor.name}*\nDeliver to: ${address}\nSubtotal: ₦${subtotal.toLocaleString("en-US")}\nDelivery fee: ₦${DELIVERY_FEE.toLocaleString("en-US")}\n*Total: ₦${totalAmount.toLocaleString("en-US")}*\n${paymentMessage}`,
+      body: `${orderItems.map((item) => `${item.qty} x *${item.title}*`).join("\n")} from *${vendor.name}*\nDeliver to: ${address}\nSubtotal: ₦${subtotal.toLocaleString("en-US")}\nDelivery fee: ₦${DELIVERY_FEE.toLocaleString("en-US")}\nPaystack processing fee: ₦${customerPayment.processingFee.toLocaleString("en-US")}\n*Total: ₦${customerTotal.toLocaleString("en-US")}*\n${paymentMessage}`,
     },
     nextStage: null,
   };

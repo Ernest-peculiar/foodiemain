@@ -6,6 +6,7 @@ create table if not exists vendors (
   phone text unique,
   menu text,
   menu_items jsonb default '[]'::jsonb,
+  paystack_subaccount_code text,
   is_active boolean not null default true,
   is_open boolean not null default true,
   created_at timestamptz not null default now(),
@@ -27,6 +28,8 @@ where menu_items is null
 
 alter table vendors
   add column if not exists menu_items jsonb default '[]'::jsonb;
+alter table vendors
+  add column if not exists paystack_subaccount_code text;
 
 create table if not exists drivers (
   id uuid primary key default gen_random_uuid(),
@@ -51,6 +54,7 @@ create table if not exists orders (
   items jsonb not null default '[]'::jsonb,
   subtotal numeric(10,2) not null default 0,
   delivery_fee numeric(10,2) not null default 0,
+  payment_processing_fee numeric(10,2) not null default 0,
   total numeric(10,2) not null default 0,
   delivery_address text,
   -- 'pending_payment' added: an order now exists in this state from the
@@ -79,6 +83,7 @@ create table if not exists orders (
 -- instead of relying on the CREATE TABLE above (which only applies to a
 -- fresh table):
 --   alter table orders add column if not exists payment_status text not null default 'unpaid';
+--   alter table orders add column if not exists payment_processing_fee numeric(10,2) not null default 0;
 --   alter table orders add column if not exists paystack_reference text unique;
 --   alter table orders add column if not exists paid_at timestamptz;
 --   alter table orders add column if not exists customer_confirmed_at timestamptz;
