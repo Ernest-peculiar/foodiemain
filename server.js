@@ -539,6 +539,7 @@ function buildVendorMenuReply(vendorRecord, introText) {
     id: vendorRecord.id,
     name: vendorRecord.name,
     phone: vendorRecord.phone,
+    paystack_subaccount_code: vendorRecord.paystack_subaccount_code || null,
     vicinity: vendorRecord.vicinity || "Registered restaurant",
   };
 
@@ -687,7 +688,12 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
     };
   }
 
-  if (!vendor.paystack_subaccount_code) {
+  const payoutVendor =
+    (vendor.id && (await getVendorRecordById(vendor.id))) || vendor;
+  const paystackSubaccountCode =
+    payoutVendor.paystack_subaccount_code || vendor.paystack_subaccount_code;
+
+  if (!paystackSubaccountCode) {
     return {
       replies: {
         type: "text",
@@ -753,7 +759,7 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
       customerTotal,
       orderRecord.id,
       {
-        subaccount: vendor.paystack_subaccount_code,
+        subaccount: paystackSubaccountCode,
         platformShare,
       },
     );
