@@ -835,6 +835,17 @@
       const driverListWrap = document.getElementById("driverListWrap");
       const driverPhotoInput = document.getElementById("driverPhoto");
 
+      async function readDriverApiResponse(res) {
+        const text = await res.text();
+        try {
+          return text ? JSON.parse(text) : {};
+        } catch {
+          throw new Error(
+            `Unexpected response from the server (HTTP ${res.status}). Please refresh the dashboard and try again.`,
+          );
+        }
+      }
+
       // Reads the chosen file (if any) as a base64 data URL so it can travel in
       // the same JSON POST as the rest of the form — no multipart/form-data or
       // extra upload endpoint needed. See POST /admin/api/drivers on the server,
@@ -853,7 +864,7 @@
       async function loadDrivers() {
         try {
           const res = await fetch("/admin/api/drivers");
-          const data = await res.json();
+          const data = await readDriverApiResponse(res);
           if (!res.ok) throw new Error(data.error || "Failed to load drivers");
           renderDrivers(data.drivers || []);
         } catch (err) {
@@ -941,12 +952,14 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
           });
-          const data = await res.json();
+          const data = await readDriverApiResponse(res);
           if (!res.ok) throw new Error(data.error || "Failed to add driver");
 
           showMessage(
             driverMessageEl,
-            "✅ Driver added and notified on WhatsApp.",
+            data.notified
+              ? "✅ Driver added and notified on WhatsApp."
+              : "✅ Driver added, but the WhatsApp notification could not be sent.",
             false,
           );
           driverForm.reset();

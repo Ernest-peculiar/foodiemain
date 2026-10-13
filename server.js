@@ -236,6 +236,7 @@ const {
 
 app.use(
   express.json({
+    limit: "8mb",
     verify: (req, res, buf) => {
       req.rawBody = buf;
     },
@@ -1126,6 +1127,18 @@ app.get("/paystack/callback", async (req, res) => {
         "<h2>Something went wrong.</h2><p>Please return to WhatsApp — if payment succeeded, your receipt will still arrive there.</p>",
       );
   }
+});
+
+app.use((error, req, res, next) => {
+  if (!req.path.startsWith("/admin/api/")) return next(error);
+
+  const status = error.status === 413 ? 413 : 400;
+  return res.status(status).json({
+    error:
+      status === 413
+        ? "Request is too large. Choose a smaller driver photo and try again."
+        : "Could not read the request. Please check the form data and try again.",
+  });
 });
 
 // ============================================
