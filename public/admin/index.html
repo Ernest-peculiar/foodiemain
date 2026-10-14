@@ -47,7 +47,7 @@
       /* --- Stats dashboard -------------------------------------------------- */
       .stats-grid {
         display: grid;
-        grid-template-columns: repeat(3, 1fr);
+        grid-template-columns: repeat(4, minmax(0, 1fr));
         gap: 12px;
         margin-bottom: 24px;
       }
@@ -89,6 +89,72 @@
         display: inline-block;
         flex: 0 0 auto;
         animation: pulse 1.6s ease-in-out infinite;
+      }
+      .operations-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 16px;
+        margin-bottom: 24px;
+      }
+      .operations-grid .card {
+        min-width: 0;
+        margin-bottom: 0;
+      }
+      .operations-grid .orders-panel {
+        grid-column: 1 / -1;
+      }
+      .panel-heading {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+      .panel-heading h2 {
+        margin: 0;
+      }
+      .panel-heading select {
+        width: auto;
+        min-width: 130px;
+        padding: 8px 10px;
+      }
+      .operations-summary {
+        color: #888;
+        font-size: 12px;
+        margin: -8px 0 12px;
+      }
+      .mini-stats {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+        margin-bottom: 18px;
+      }
+      .mini-stat {
+        min-width: 0;
+        background: #fafafa;
+        border-radius: 10px;
+        padding: 12px;
+      }
+      .mini-stat strong {
+        display: block;
+        font-size: 20px;
+      }
+      .mini-stat span {
+        color: #777;
+        font-size: 11px;
+      }
+      .status-pill {
+        display: inline-block;
+        padding: 3px 8px;
+        border-radius: 999px;
+        background: #fff4d6;
+        color: #755600;
+        font-size: 11px;
+        font-weight: 600;
+      }
+      .status-pill.in-progress {
+        background: #e8f1ff;
+        color: #24549a;
       }
       @keyframes pulse {
         0%,
@@ -274,6 +340,13 @@
           grid-template-columns: repeat(2, 1fr);
           gap: 10px;
         }
+        .operations-grid {
+          grid-template-columns: 1fr;
+          gap: 12px;
+        }
+        .operations-grid .orders-panel {
+          grid-column: auto;
+        }
         .stat-card {
           padding: 12px 14px;
         }
@@ -340,6 +413,64 @@
           <div class="stat-value" id="statAllTimeTotal">—</div>
           <div class="stat-sub" id="statAllTimeCount">—</div>
         </div>
+        <div class="stat-card">
+          <div class="stat-label">All-time vendors</div>
+          <div class="stat-value" id="statAllTimeVendors">—</div>
+          <div class="stat-sub" id="statAllTimeVendorsMeta">—</div>
+        </div>
+      </div>
+
+      <div class="operations-grid">
+        <section class="card orders-panel">
+          <div class="panel-heading">
+            <h2>Orders needing attention</h2>
+          </div>
+          <p class="operations-summary" id="openOrdersSummary">
+            Loading active orders…
+          </p>
+          <div class="table-scroll" id="openOrdersWrap">
+            <p class="empty">Loading…</p>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="panel-heading">
+            <h2>Vendor performance</h2>
+            <select id="vendorPerformancePeriod" aria-label="Vendor performance period">
+              <option value="today">Today</option>
+              <option value="7d" selected>Last 7 days</option>
+              <option value="30d">Last 30 days</option>
+            </select>
+          </div>
+          <p class="operations-summary" id="vendorPerformanceSummary">
+            Paid orders and sales by vendor.
+          </p>
+          <div class="table-scroll" id="vendorPerformanceWrap">
+            <p class="empty">Loading…</p>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>Driver availability</h2>
+          <div class="mini-stats">
+            <div class="mini-stat">
+              <strong id="onlineDrivers">—</strong>
+              <span>Online</span>
+            </div>
+            <div class="mini-stat">
+              <strong id="availableDrivers">—</strong>
+              <span>Available</span>
+            </div>
+            <div class="mini-stat">
+              <strong id="deliveringDrivers">—</strong>
+              <span>Delivering</span>
+            </div>
+          </div>
+          <h2>Payout setup</h2>
+          <p class="operations-summary" id="payoutSetupSummary">
+            Checking active vendor subaccounts…
+          </p>
+        </section>
       </div>
 
       <div class="card">
@@ -980,6 +1111,21 @@
       const statTodayCount = document.getElementById("statTodayCount");
       const statAllTimeTotal = document.getElementById("statAllTimeTotal");
       const statAllTimeCount = document.getElementById("statAllTimeCount");
+      const statAllTimeVendors = document.getElementById("statAllTimeVendors");
+      const statAllTimeVendorsMeta = document.getElementById(
+        "statAllTimeVendorsMeta",
+      );
+      const openOrdersWrap = document.getElementById("openOrdersWrap");
+      const openOrdersSummary = document.getElementById("openOrdersSummary");
+      const vendorPerformanceWrap = document.getElementById(
+        "vendorPerformanceWrap",
+      );
+      const vendorPerformanceSummary = document.getElementById(
+        "vendorPerformanceSummary",
+      );
+      const vendorPerformancePeriod = document.getElementById(
+        "vendorPerformancePeriod",
+      );
 
       function formatNaira(amount) {
         return "₦" + (Number(amount) || 0).toLocaleString("en-US");
@@ -991,27 +1137,169 @@
           const data = await res.json();
           if (!res.ok) throw new Error(data.error || "Failed to load stats");
 
+          const activeVendorCount = Number(data.vendors?.active ?? 0);
+          const inactiveVendorCount = Number(data.vendors?.inactive ?? 0);
+
           statActiveUsers.textContent = data.activeUsers ?? "—";
           statTodayTotal.textContent = formatNaira(data.today?.total);
           statTodayCount.textContent = `${data.today?.count ?? 0} order${(data.today?.count ?? 0) === 1 ? "" : "s"} today`;
           statAllTimeTotal.textContent = formatNaira(data.allTime?.total);
           statAllTimeCount.textContent = `${data.allTime?.count ?? 0} order${(data.allTime?.count ?? 0) === 1 ? "" : "s"} total`;
+          statAllTimeVendors.textContent = data.vendors?.total ?? 0;
+          statAllTimeVendorsMeta.textContent = `${activeVendorCount} active / ${inactiveVendorCount} inactive`;
         } catch (err) {
           statActiveUsers.textContent = "—";
           statTodayTotal.textContent = "—";
           statTodayCount.textContent = err.message;
           statAllTimeTotal.textContent = "—";
           statAllTimeCount.textContent = "";
+          statAllTimeVendors.textContent = "—";
+          statAllTimeVendorsMeta.textContent = "";
         }
       }
 
+      function formatDateTime(value) {
+        const date = new Date(value);
+        return Number.isNaN(date.getTime())
+          ? "Unknown"
+          : date.toLocaleString();
+      }
+
+      function displayOrderStatus(status) {
+        const labels = {
+          pending_vendor: "Waiting for vendor",
+          awaiting_driver: "Waiting for driver",
+          driver_assigned: "Driver assigned",
+          picked_up: "Picked up",
+        };
+        return labels[status] || status || "Unknown";
+      }
+
+      function renderOpenOrders(orders) {
+        if (!orders.length) {
+          openOrdersWrap.innerHTML =
+            '<p class="empty">No active orders need attention.</p>';
+          return;
+        }
+
+        const rows = orders
+          .map((order) => {
+            const inProgress = ["driver_assigned", "picked_up"].includes(
+              order.status,
+            );
+            return (
+              "<tr>" +
+              "<td>" +
+              escapeHtml(String(order.id || "").slice(0, 8)) +
+              "</td><td>" +
+              escapeHtml(order.customer_name || "Customer") +
+              "</td><td>" +
+              escapeHtml(order.restaurant_name || "Unknown restaurant") +
+              '</td><td><span class="status-pill' +
+              (inProgress ? " in-progress" : "") +
+              '">' +
+              escapeHtml(displayOrderStatus(order.status)) +
+              "</span></td><td>" +
+              formatNaira(order.total) +
+              "</td><td>" +
+              escapeHtml(formatDateTime(order.created_at)) +
+              "</td></tr>"
+            );
+          })
+          .join("");
+
+        openOrdersWrap.innerHTML =
+          "<table><thead><tr><th>Order</th><th>Customer</th><th>Restaurant</th><th>Status</th><th>Total</th><th>Created</th></tr></thead><tbody>" +
+          rows +
+          "</tbody></table>";
+      }
+
+      function renderVendorPerformance(vendors) {
+        if (!vendors.length) {
+          vendorPerformanceWrap.innerHTML =
+            '<p class="empty">No paid orders in this period.</p>';
+          return;
+        }
+
+        const rows = vendors
+          .map(
+            (vendor) =>
+              "<tr><td>" +
+              escapeHtml(vendor.name) +
+              "</td><td>" +
+              Number(vendor.orderCount || 0).toLocaleString("en-US") +
+              "</td><td>" +
+              formatNaira(vendor.sales) +
+              "</td></tr>",
+          )
+          .join("");
+        vendorPerformanceWrap.innerHTML =
+          "<table><thead><tr><th>Vendor</th><th>Paid orders</th><th>Sales</th></tr></thead><tbody>" +
+          rows +
+          "</tbody></table>";
+      }
+
+      async function loadOperations() {
+        try {
+          const period = vendorPerformancePeriod.value;
+          const res = await fetch(
+            "/admin/api/operations?period=" + encodeURIComponent(period),
+          );
+          const data = await res.json();
+          if (!res.ok) {
+            throw new Error(data.error || "Failed to load dashboard operations");
+          }
+
+          const orders = data.openOrders || [];
+          openOrdersSummary.textContent =
+            orders.length === 50
+              ? "Showing the 50 most recent active orders."
+              : `${orders.length} active order${orders.length === 1 ? "" : "s"} across vendor and delivery steps.`;
+          renderOpenOrders(orders);
+
+          const periodLabels = {
+            today: "today",
+            "7d": "the last 7 days",
+            "30d": "the last 30 days",
+          };
+          vendorPerformanceSummary.textContent =
+            `Paid orders and sales ${periodLabels[data.period] || "in this period"}, highest sales first.`;
+          renderVendorPerformance(data.vendorPerformance || []);
+
+          document.getElementById("onlineDrivers").textContent =
+            data.drivers?.online ?? 0;
+          document.getElementById("availableDrivers").textContent =
+            data.drivers?.available ?? 0;
+          document.getElementById("deliveringDrivers").textContent =
+            data.drivers?.delivering ?? 0;
+          const payoutSetupGaps = Number(data.payoutSetupGaps || 0);
+          document.getElementById("payoutSetupSummary").textContent =
+            payoutSetupGaps === 0
+              ? "All active vendors have a Paystack subaccount configured."
+              : `${payoutSetupGaps} active vendor${payoutSetupGaps === 1 ? " is" : "s are"} missing a Paystack subaccount.`;
+        } catch (err) {
+          openOrdersSummary.textContent = err.message;
+          openOrdersWrap.innerHTML = "";
+          vendorPerformanceSummary.textContent = err.message;
+          vendorPerformanceWrap.innerHTML = "";
+          document.getElementById("onlineDrivers").textContent = "—";
+          document.getElementById("availableDrivers").textContent = "—";
+          document.getElementById("deliveringDrivers").textContent = "—";
+          document.getElementById("payoutSetupSummary").textContent =
+            "Could not load payout setup status.";
+        }
+      }
+
+      vendorPerformancePeriod.addEventListener("change", loadOperations);
       loadBanks();
       loadVendors();
       loadDrivers();
       loadStats();
+      loadOperations();
       // Refresh stats periodically so "active users" and today's totals stay
       // current without requiring a manual page reload.
       setInterval(loadStats, 30000);
+      setInterval(loadOperations, 30000);
     </script>
   </body>
 </html>
