@@ -21,6 +21,15 @@ This project is a starter WhatsApp Business API bot for the Foodie concept.
    npm start
    ```
 
+## Admin dashboard access
+
+Set `ADMIN_USERNAME` and `ADMIN_PASSWORD` for the advanced admin login. To give
+the team access only to vendor and driver registration, also set
+`ADMIN_TEAM_USERNAME` and `ADMIN_TEAM_PASSWORD` to a different username and
+password. Team accounts can use the registration forms but cannot view dashboard
+statistics, orders, registered vendor/driver lists, or charts. Restart the
+server after changing these values.
+
 ## Webhook configuration
 
 Configure your Meta app webhook to point to:

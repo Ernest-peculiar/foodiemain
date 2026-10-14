@@ -41,10 +41,17 @@ const DELIVERY_FEE = Number(process.env.DELIVERY_FEE || 500);
 const ORDER_NOTIFY_NUMBER = process.env.ORDER_NOTIFY_NUMBER;
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
+const ADMIN_TEAM_USERNAME = process.env.ADMIN_TEAM_USERNAME;
+const ADMIN_TEAM_PASSWORD = process.env.ADMIN_TEAM_PASSWORD;
 
 if (!ADMIN_USERNAME || !ADMIN_PASSWORD) {
   console.warn(
     "⚠️  ADMIN_USERNAME / ADMIN_PASSWORD are not set — the /admin dashboard will reject all requests until both are configured in .env.",
+  );
+}
+if (Boolean(ADMIN_TEAM_USERNAME) !== Boolean(ADMIN_TEAM_PASSWORD)) {
+  console.warn(
+    "⚠️  ADMIN_TEAM_USERNAME and ADMIN_TEAM_PASSWORD must both be set to enable team registration access.",
   );
 }
 
@@ -1072,6 +1079,8 @@ setupAdminRoutes(app, {
   express,
   ADMIN_USERNAME,
   ADMIN_PASSWORD,
+  ADMIN_TEAM_USERNAME,
+  ADMIN_TEAM_PASSWORD,
   PAYSTACK_SECRET_KEY,
   PUBLIC_URL,
   WHATSAPP_TOKEN,

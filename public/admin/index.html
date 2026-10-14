@@ -154,6 +154,20 @@
         color: #888;
         font-size: 12px;
       }
+      .team-view .admin-only {
+        display: none !important;
+      }
+      #accessMessage {
+        display: none;
+        padding: 10px 12px;
+        border-radius: 8px;
+        background: #fdeeee;
+        color: #b3261e;
+        font-size: 13px;
+      }
+      #accessMessage.visible {
+        display: block;
+      }
       .status-chart {
         display: grid;
         gap: 10px;
@@ -420,17 +434,18 @@
       }
     </style>
   </head>
-  <body>
+  <body class="team-view">
     <header>
       <h1>🧾 Foodie Admin</h1>
       <p>
         Add Vendor / Add Driver — internal use only, not linked from the
         WhatsApp bot.
       </p>
+      <p id="accessMessage" role="alert"></p>
     </header>
 
     <main>
-      <div class="stats-grid" id="statsGrid">
+      <div class="stats-grid admin-only" id="statsGrid">
         <div class="stat-card">
           <div class="stat-label">
             <span class="live-dot"></span>Active users
@@ -455,7 +470,7 @@
         </div>
       </div>
 
-      <div class="operations-grid">
+      <div class="operations-grid admin-only">
         <section class="card orders-panel">
           <div class="panel-heading">
             <h2>Orders needing attention</h2>
@@ -671,7 +686,7 @@
         </form>
       </div>
 
-      <div class="card">
+      <div class="card admin-only">
         <h2>Registered vendors</h2>
         <div class="table-scroll">
           <div id="vendorListWrap"><p class="empty">Loading…</p></div>
@@ -745,7 +760,7 @@
         </form>
       </div>
 
-      <div class="card">
+      <div class="card admin-only">
         <h2>Registered drivers</h2>
         <div class="table-scroll">
           <div id="driverListWrap"><p class="empty">Loading…</p></div>
@@ -1424,15 +1439,35 @@
       }
 
       vendorPerformancePeriod.addEventListener("change", loadOperations);
+
+      async function loadAccess() {
+        const accessMessage = document.getElementById("accessMessage");
+        try {
+          const res = await fetch("/admin/api/access");
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || "Could not verify access.");
+
+          if (data.role === "admin") {
+            document.body.classList.remove("team-view");
+            loadVendors();
+            loadDrivers();
+            loadStats();
+            loadOperations();
+            // Refresh advanced dashboard data without reloading the page.
+            setInterval(loadStats, 30000);
+            setInterval(loadOperations, 30000);
+          } else if (data.role !== "team") {
+            throw new Error("This account does not have a supported admin role.");
+          }
+        } catch (err) {
+          accessMessage.textContent =
+            err.message + " Refresh the page or contact the administrator.";
+          accessMessage.classList.add("visible");
+        }
+      }
+
       loadBanks();
-      loadVendors();
-      loadDrivers();
-      loadStats();
-      loadOperations();
-      // Refresh stats periodically so "active users" and today's totals stay
-      // current without requiring a manual page reload.
-      setInterval(loadStats, 30000);
-      setInterval(loadOperations, 30000);
+      loadAccess();
     </script>
   </body>
 </html>
