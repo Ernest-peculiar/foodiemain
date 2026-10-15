@@ -151,6 +151,7 @@ const paymentHandlers = createPaymentHandlers({
 const {
   createPaystackTransaction,
   calculateCustomerPayment,
+  isPaystackTestMode,
   generateReceiptPNG,
   uploadWhatsAppMedia,
   buildPaymentSuccessPage,
@@ -701,7 +702,7 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
   const paystackSubaccountCode =
     payoutVendor.paystack_subaccount_code || vendor.paystack_subaccount_code;
 
-  if (!paystackSubaccountCode) {
+  if (!paystackSubaccountCode && !isPaystackTestMode) {
     return {
       replies: {
         type: "text",
