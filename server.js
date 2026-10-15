@@ -576,6 +576,16 @@ function buildVendorMenuReply(vendorRecord, introText) {
 }
 
 // Handle order awaiting delivery address confirmation
+function getVendorUnavailableReply(vendor) {
+  return {
+    replies: {
+      type: "text",
+      body: `Sorry, *${vendor.name || "this restaurant"}* is currently offline and can't accept orders right now. You have not been charged. Please choose another restaurant or try again later.`,
+    },
+    nextStage: null,
+  };
+}
+
 async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
   const menuItems = Array.isArray(session.menuItems) ? session.menuItems : [];
   const cart =
@@ -699,6 +709,12 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
 
   const payoutVendor =
     (vendor.id && (await getVendorRecordById(vendor.id))) || vendor;
+  if (
+    payoutVendor.is_active === false ||
+    payoutVendor.is_open === false
+  ) {
+    return getVendorUnavailableReply(vendor);
+  }
   const paystackSubaccountCode =
     payoutVendor.paystack_subaccount_code || vendor.paystack_subaccount_code;
 
@@ -738,6 +754,9 @@ async function handleOrderAwaitAddress(text, name, session, shortName, phone) {
       status: "pending_payment",
     });
   } catch (error) {
+    if (error.code === "VENDOR_UNAVAILABLE") {
+      return getVendorUnavailableReply(vendor);
+    }
     console.error("dispatch.createOrderRecord threw:", error.message || error);
     return {
       replies: {
@@ -1104,6 +1123,7 @@ setupWebhookRoutes(app, {
   buildPaymentSuccessPage,
   supabase,
   ORDER_NOTIFY_NUMBER,
+  getVendorPrepTimeButtonsReply,
 });
 
 // PayStack browser callback (payment confirmation page user sees after paying)

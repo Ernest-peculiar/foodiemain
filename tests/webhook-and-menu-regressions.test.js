@@ -5,6 +5,7 @@ const {
   hasMenuContent,
 } = require("../lib/utils");
 const createDatabase = require("../lib/database");
+const dispatch = require("../lib/order-dispatch");
 const createStageHandlers = require("../lib/handlers-stages");
 const createUIHelpers = require("../lib/helpers-ui");
 const createDispatchHandlers = require("../lib/handlers-dispatch");
@@ -131,6 +132,41 @@ test("hasMenuContent accepts stringified menu_items JSON", () => {
       menu_items: JSON.stringify([{ title: "Jollof Rice", price: 2500 }]),
     }),
     true,
+  );
+});
+
+test("createOrderRecord refuses checkout when the vendor is offline", async () => {
+  const vendor = {
+    id: "vendor-1",
+    name: "Dukes",
+    phone: "2348012345678",
+    is_active: true,
+    is_open: false,
+  };
+  const supabase = {
+    from: (table) => {
+      assert.equal(table, "vendors");
+      return {
+        select() {
+          return this;
+        },
+        eq() {
+          return this;
+        },
+        async maybeSingle() {
+          return { data: vendor, error: null };
+        },
+      };
+    },
+  };
+
+  await assert.rejects(
+    dispatch.createOrderRecord(supabase, {
+      vendor,
+      restaurantName: vendor.name,
+      status: "pending_payment",
+    }),
+    (error) => error.code === "VENDOR_UNAVAILABLE",
   );
 });
 
