@@ -37,6 +37,30 @@ Configure your Meta app webhook to point to:
 - Callback URL: https://your-domain.com/webhook
 - Verify Token: the value in VERIFY_TOKEN
 
+## Live delivery tracking
+
+After a driver accepts an order, Foodie sends the customer a private tracking
+link and the driver a separate location-sharing link. The customer sees an
+order-status sheet with a button to reveal the live map. The driver must open
+their link on a phone, allow location access, and keep the page open while
+delivering. Browser GPS requires the deployed site to use HTTPS.
+
+Before enabling tracking on an existing Supabase database, apply
+`migrations/002_delivery_tracking.sql` in the Supabase SQL editor. The table
+stores only hashed access tokens and the latest rider location; row-level
+security is enabled, and the server accesses it using the service-role key.
+
+Set `GEOAPIFY_API_KEY` in the server environment to enable address geocoding
+and road directions. Keep this key server-side; it is not sent to the browser.
+The tracking pages use OpenStreetMap tiles with attribution as the basemap.
+`PUBLIC_URL` must be the public HTTPS URL of the deployed app so WhatsApp can
+open the rider and customer links.
+
+Tracking updates are polled every five seconds. Location sharing is accepted
+only for the assigned rider and only while the order is assigned or picked up;
+direction routing to the customer becomes available after pickup and stops when
+the order is delivered or cancelled.
+
 ## Voice notes
 
 Users can send voice notes as orders. The bot downloads the WhatsApp audio,

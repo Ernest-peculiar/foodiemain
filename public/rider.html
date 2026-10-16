@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#101719">
+    <meta name="referrer" content="no-referrer">
+    <title>Share rider location · Foodie</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    >
+    <style>
+      :root { color-scheme: dark; font-family: Arial, sans-serif; background: #101719; color: #f5f7f7; --green: #20c66b; }
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 16px; }
+      main { width: min(680px, 100%); margin: 0 auto; }
+      h1 { font-size: 24px; margin: 8px 0; }
+      .card { border-radius: 18px; padding: 18px; margin: 14px 0; background: #1b2527; }
+      #map { height: 42vh; min-height: 280px; border-radius: 16px; background: #263234; }
+      button { width: 100%; border: 0; border-radius: 28px; padding: 16px; margin: 14px 0; background: var(--green); color: #062a16; font-size: 16px; font-weight: 700; }
+      button.secondary { background: #344143; color: white; }
+      button:disabled { opacity: .55; }
+      #status { color: var(--green); font-weight: 700; }
+      #message { color: #c5d0d1; line-height: 1.5; }
+      .error { color: #ffb6a9 !important; }
+      a { color: var(--green); }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Foodie rider location</h1>
+      <p id="status">Checking delivery…</p>
+      <section class="card">
+        <div id="map" aria-label="Route to customer"></div>
+        <p id="destination"></p>
+        <p id="message">Allow location access and keep this page open while delivering. Sharing stops when the order is completed.</p>
+        <p id="error" class="error" role="status"></p>
+        <button id="start" type="button">Start sharing location</button>
+        <button id="stop" class="secondary" type="button" hidden>Stop sharing location</button>
+      </section>
+    </main>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <script>
+      (() => {
+        const queryToken =
+          new URLSearchParams(location.search).get("token") ||
+          new URLSearchParams(location.hash.slice(1)).get("token");
+        const token = queryToken || sessionStorage.getItem("foodieRiderToken");
+        if (!token || !/^[a-f0-9]{64}$/i.test(token)) {
+          document.getElementById("status").textContent = "This rider link is invalid.";
+          document.getElementById("start").disabled = true;
+          return;
+        }
+        sessionStorage.setItem("foodieRiderToken", token);
+        history.replaceState(null, "", location.pathname);
+
+        const map = L.map("map").setView([6.45, 7.5], 13);
+        let tileLayer;
+        let riderMarker;
+        let destinationMarker;
+        let routeLayer;
+        let watchId;
+        let lastSentAt = 0;
+        let lastDirectionsAt = 0;
+
+        async function api(url, options = {}) {
+          const response = await fetch(url, {
+            ...options,
+            headers: {
+              Authorization: `Bearer ${token}`,
+              ...(options.headers || {}),
+              ...(options.body ? { "Content-Type": "application/json" } : {}),
+            },
+            cache: "no-store",
+          });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(data.error || "Delivery tracking is temporarily unavailable.");
+          return data;
+        }
+
+        async function refresh() {
+          const data = await api("/api/tracking");
+          document.getElementById("status").textContent = ({
+            driver_assigned: "Heading to the restaurant",
+            picked_up: "Delivering to the customer",
+            delivered: "Delivery completed",
+            cancelled: "Order cancelled",
+          })[data.order.status] || "Delivery is not active";
+          document.getElementById("destination").textContent =
+            `Deliver to: ${data.order.deliveryAddress || "Address unavailable"}`;
+          if (data.order.status === "delivered" || data.order.status === "cancelled") {
+            stopSharing();
+            document.getElementById("start").hidden = true;
+            document.getElementById("stop").hidden = true;
+            document.getElementById("message").textContent = "Location sharing has ended for this delivery.";
+            if (riderMarker) map.removeLayer(riderMarker);
+            if (routeLayer) map.removeLayer(routeLayer);
+          }
+          if (!tileLayer) {
+            tileLayer = L.tileLayer(
+              "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+              { maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' },
+            ).addTo(map);
+          }
+          if (data.destination) {
+            const point = [data.destination.latitude, data.destination.longitude];
+            if (!destinationMarker) destinationMarker = L.marker(point).addTo(map);
+            else destinationMarker.setLatLng(point);
+            destinationMarker.bindPopup("Customer delivery address");
+          }
+          if (data.riderLocation) {
+            const point = [data.riderLocation.latitude, data.riderLocation.longitude];
+            if (!riderMarker) riderMarker = L.marker(point).addTo(map);
+            else riderMarker.setLatLng(point);
+            map.setView(point, 15);
+          }
+          return data;
+        }
+
+        async function sendLocation(position) {
+          const now = Date.now();
+          if (now - lastSentAt < 5000) return;
+          lastSentAt = now;
+          const { latitude, longitude, accuracy } = position.coords;
+          try {
+            await api("/api/rider/location", {
+              method: "POST",
+              body: JSON.stringify({ latitude, longitude, accuracy }),
+            });
+            document.getElementById("message").textContent =
+              `Location shared at ${new Date().toLocaleTimeString()}. Keep this page open while delivering.`;
+            document.getElementById("error").textContent = "";
+            const data = await refresh();
+            if (
+              data.order.status === "picked_up" &&
+              Date.now() - lastDirectionsAt >= 15000
+            ) {
+              const route = await api("/api/tracking/directions");
+              const coordinates = route.features?.[0]?.geometry?.coordinates || [];
+              if (coordinates.length) {
+                const latLngs = coordinates.map(([lng, lat]) => [lat, lng]);
+                if (routeLayer) routeLayer.setLatLngs(latLngs);
+                else routeLayer = L.polyline(latLngs, { color: "#20c66b", weight: 5 }).addTo(map);
+                lastDirectionsAt = Date.now();
+              }
+            }
+          } catch (error) {
+            document.getElementById("error").textContent = error.message;
+          }
+        }
+
+        function stopSharing() {
+          if (watchId != null) navigator.geolocation.clearWatch(watchId);
+          watchId = null;
+          document.getElementById("start").hidden = false;
+          document.getElementById("stop").hidden = true;
+          document.getElementById("message").textContent = "Location sharing is paused. Start it again to resume.";
+        }
+
+        document.getElementById("start").addEventListener("click", async () => {
+          const error = document.getElementById("error");
+          error.textContent = "";
+          if (!window.isSecureContext || !navigator.geolocation) {
+            error.textContent = "Location sharing requires an HTTPS connection and a browser with GPS support.";
+            return;
+          }
+          try {
+            const data = await refresh();
+            if (!["driver_assigned", "picked_up"].includes(data.order.status)) {
+              throw new Error("Location sharing is available only for an active delivery.");
+            }
+            watchId = navigator.geolocation.watchPosition(
+              sendLocation,
+              (geoError) => {
+                error.textContent = geoError.code === geoError.PERMISSION_DENIED
+                  ? "Please allow location access in your browser settings to share your route."
+                  : "Could not get your GPS location. Check that location services are enabled.";
+              },
+              { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 },
+            );
+            document.getElementById("start").hidden = true;
+            document.getElementById("stop").hidden = false;
+            document.getElementById("message").textContent = "Waiting for your GPS location…";
+          } catch (startError) {
+            error.textContent = startError.message;
+          }
+        });
+        document.getElementById("stop").addEventListener("click", stopSharing);
+        refresh().catch((error) => {
+          document.getElementById("error").textContent = error.message;
+          document.getElementById("status").textContent = "Delivery tracking is unavailable.";
+        });
+        setInterval(() => {
+          refresh().catch((error) => {
+            document.getElementById("error").textContent = error.message;
+          });
+        }, 5000);
+      })();
+    </script>
+  </body>
+</html>

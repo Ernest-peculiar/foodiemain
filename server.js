@@ -32,6 +32,7 @@ const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const WHATSAPP_API_VERSION = process.env.WHATSAPP_API_VERSION || "v22.0";
 const GROK_API_KEY = process.env.GROK_API_KEY;
+const GEOAPIFY_API_KEY = process.env.GEOAPIFY_API_KEY;
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_TRANSCRIPTION_MODEL =
@@ -230,6 +231,9 @@ const dispatchHandlers = createDispatchHandlers({
   WHATSAPP_TOKEN,
   WHATSAPP_API_VERSION,
   ORDER_NOTIFY_NUMBER,
+  PUBLIC_URL,
+  createDeliveryTrackingTokens:
+    require("./lib/tracking").createDeliveryTrackingTokens,
 });
 const {
   handleAvailabilityCommands,
@@ -255,6 +259,9 @@ app.use(
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, "public")));
 
+const setupTrackingRoutes = require("./lib/routes-tracking");
+setupTrackingRoutes(app, { supabase, GEOAPIFY_API_KEY });
+
 // ============================================
 // HELPER FUNCTIONS
 // ============================================
@@ -262,10 +269,7 @@ app.use(express.static(path.join(__dirname, "public")));
 // WhatsApp API message sender (not in any module since it's used across many)
 async function sendWhatsAppMessage(toPhone, message) {
   if (!WHATSAPP_TOKEN || !WHATSAPP_PHONE_NUMBER_ID) {
-    console.warn(
-      "WhatsApp credentials not configured; message not sent:",
-      message,
-    );
+    console.warn("WhatsApp credentials not configured; message not sent.");
     return null;
   }
 

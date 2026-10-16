@@ -79,6 +79,20 @@ create table if not exists orders (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists delivery_tracking (
+  order_id uuid primary key references orders(id) on delete cascade,
+  customer_token_hash text not null unique,
+  rider_token_hash text not null unique,
+  latitude double precision,
+  longitude double precision,
+  location_accuracy double precision,
+  location_updated_at timestamptz,
+  destination_latitude double precision,
+  destination_longitude double precision,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 -- If you already have an `orders` table from before this change, run these
 -- instead of relying on the CREATE TABLE above (which only applies to a
 -- fresh table):
@@ -101,6 +115,7 @@ create index if not exists idx_drivers_phone on drivers(phone);
 alter table vendors enable row level security;
 alter table drivers enable row level security;
 alter table orders enable row level security;
+alter table delivery_tracking enable row level security;
 
 create or replace function assign_driver_to_order(order_uuid uuid, driver_uuid uuid)
 returns jsonb

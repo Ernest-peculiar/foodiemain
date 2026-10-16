@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#101719">
+    <meta name="referrer" content="no-referrer">
+    <title>Track your Foodie delivery</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    >
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Arial, sans-serif;
+        background: #101719;
+        color: #f5f7f7;
+        --green: #20c66b;
+        --muted: #a6b0b2;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; background: #101719; }
+      #map { position: fixed; inset: 0; z-index: 0; background: #202a2c; }
+      .map-shade { position: fixed; inset: 0; z-index: 1; pointer-events: none; background: linear-gradient(180deg, #10171955, transparent 38%, #10171966); }
+      .topbar { position: fixed; z-index: 2; top: 18px; left: 16px; right: 16px; display: flex; justify-content: space-between; align-items: center; }
+      .brand { border: 1px solid #ffffff20; border-radius: 999px; padding: 10px 14px; background: #101719df; font-weight: 700; }
+      .sheet { position: fixed; z-index: 3; inset: auto 0 0; min-height: 72vh; padding: 16px 22px calc(28px + env(safe-area-inset-bottom)); background: #101719; border-radius: 28px 28px 0 0; box-shadow: 0 -12px 38px #0008; transition: height .28s ease, min-height .28s ease, transform .28s ease; }
+      .sheet.collapsed { height: 245px; min-height: 245px; overflow: hidden; }
+      .handle { width: 46px; height: 5px; border-radius: 8px; background: #475254; margin: 0 auto 22px; }
+      .sheet-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+      h1 { font-size: 23px; margin: 0; }
+      .status { margin: 8px 0 22px; color: var(--green); font-weight: 700; }
+      .details { line-height: 1.6; color: #e1e7e7; }
+      .details strong { display: block; margin-bottom: 4px; color: #fff; }
+      .rider { display: flex; align-items: center; gap: 12px; margin: 18px 0; min-height: 48px; }
+      .rider img { width: 42px; height: 42px; object-fit: cover; border-radius: 50%; }
+      .rider small, .hint { color: var(--muted); }
+      button { width: 100%; border: 0; border-radius: 28px; padding: 16px 18px; margin-top: 12px; background: var(--green); color: #062a16; font-size: 16px; font-weight: 700; cursor: pointer; }
+      button.secondary { background: #263234; color: #fff; }
+      .map-note { position: fixed; z-index: 2; bottom: 248px; left: 14px; right: 14px; text-align: center; color: white; text-shadow: 0 1px 5px #000; pointer-events: none; }
+      .sheet.collapsed ~ .map-note { display: none; }
+      .sheet.collapsed .details, .sheet.collapsed .rider, .sheet.collapsed #hint, .sheet.collapsed #error { display: none; }
+      .error { color: #ffb6a9; }
+      .marker { width: 18px; height: 18px; border: 3px solid white; border-radius: 50%; background: #20c66b; box-shadow: 0 1px 8px #0009; }
+      @media (min-width: 700px) {
+        .sheet { inset: 0 0 0 auto; width: min(440px, 100%); min-height: 100vh; border-radius: 24px 0 0 24px; }
+        .sheet.collapsed { height: 280px; min-height: 280px; }
+        .map-note { bottom: 24px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="map" aria-label="Delivery map"></div>
+    <div class="map-shade"></div>
+    <header class="topbar"><div class="brand">Foodie · Live delivery</div></header>
+    <main id="sheet" class="sheet">
+      <div class="handle"></div>
+      <div class="sheet-heading"><h1>Your delivery</h1><span aria-hidden="true">⋮</span></div>
+      <p id="status" class="status">Loading order status…</p>
+      <div class="details"><strong id="restaurant"></strong><span id="address"></span></div>
+      <div id="rider" class="rider"></div>
+      <p id="hint" class="hint">The live map appears when your rider starts sharing their location.</p>
+      <p id="error" class="error" role="status"></p>
+      <button id="view-map" type="button">View live map</button>
+    </main>
+    <p class="map-note">Your rider’s live location will appear here</p>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <script>
+      (() => {
+        const queryToken =
+          new URLSearchParams(location.search).get("token") ||
+          new URLSearchParams(location.hash.slice(1)).get("token");
+        const token = queryToken || sessionStorage.getItem("foodieTrackingToken");
+        if (!token || !/^[a-f0-9]{64}$/i.test(token)) {
+          document.getElementById("status").textContent = "This tracking link is invalid.";
+          document.getElementById("view-map").disabled = true;
+          return;
+        }
+        sessionStorage.setItem("foodieTrackingToken", token);
+        history.replaceState(null, "", location.pathname);
+
+        const map = L.map("map", { zoomControl: false }).setView([6.45, 7.5], 13);
+        L.control.zoom({ position: "topright" }).addTo(map);
+        let tileLayer;
+        let riderMarker;
+        let destinationMarker;
+        let routeLayer;
+        let previousLocationAt;
+        let previousDirectionsAt = 0;
+
+        function setText(id, value) {
+          document.getElementById(id).textContent = value || "";
+        }
+
+        function statusLabel(status) {
+          return ({
+            pending_payment: "Waiting for payment",
+            pending_vendor: "Waiting for restaurant confirmation",
+            awaiting_driver: "Finding a rider",
+            driver_assigned: "Your rider is heading to the restaurant",
+            picked_up: "Your order is on its way to you",
+            delivered: "Delivery completed",
+            cancelled: "This order was cancelled",
+            vendor_rejected: "The restaurant could not accept this order",
+          })[status] || "Order update";
+        }
+
+        async function api(url) {
+          const response = await fetch(url, {
+            headers: { Authorization: `Bearer ${token}` },
+            cache: "no-store",
+          });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(data.error || "Tracking is temporarily unavailable.");
+          return data;
+        }
+
+        async function refresh() {
+          try {
+            const data = await api("/api/tracking");
+            setText("status", statusLabel(data.order.status));
+            setText("restaurant", data.order.restaurantName);
+            setText("address", data.order.deliveryAddress);
+            const rider = document.getElementById("rider");
+            rider.replaceChildren();
+            if (data.driver) {
+              if (data.driver.photo_url) {
+                const image = document.createElement("img");
+                image.src = data.driver.photo_url;
+                image.alt = "";
+                rider.append(image);
+              }
+              const info = document.createElement("span");
+              info.textContent = `${data.driver.name || "Your rider"}${data.driver.vehicle_type ? ` · ${data.driver.vehicle_type}` : ""}`;
+              rider.append(info);
+            } else {
+              setText("hint", "We’re finding a rider for your order.");
+            }
+
+            if (!tileLayer) {
+              tileLayer = L.tileLayer(
+                "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+                { maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' },
+              ).addTo(map);
+            }
+
+            if (data.destination) {
+              const point = [data.destination.latitude, data.destination.longitude];
+              if (!destinationMarker) destinationMarker = L.marker(point).addTo(map);
+              else destinationMarker.setLatLng(point);
+              destinationMarker.bindPopup("Delivery address");
+              if (!data.riderLocation && !previousLocationAt) map.setView(point, 15);
+            }
+            if (data.riderLocation) {
+              const point = [data.riderLocation.latitude, data.riderLocation.longitude];
+              if (!riderMarker) {
+                riderMarker = L.marker(point, {
+                  icon: L.divIcon({ className: "", html: '<div class="marker"></div>', iconSize: [18, 18], iconAnchor: [9, 9] }),
+                }).addTo(map);
+              } else {
+                riderMarker.setLatLng(point);
+              }
+              riderMarker.bindPopup(data.driver?.name || "Your rider");
+              if (!previousLocationAt) map.setView(point, 15);
+              if (data.riderLocation.updatedAt !== previousLocationAt) {
+                previousLocationAt = data.riderLocation.updatedAt;
+                if (
+                  data.order.status === "picked_up" &&
+                  Date.now() - previousDirectionsAt >= 15000
+                ) {
+                  const route = await api("/api/tracking/directions");
+                  const coordinates = route.features?.[0]?.geometry?.coordinates || [];
+                  if (coordinates.length) {
+                    const latLngs = coordinates.map(([longitude, latitude]) => [latitude, longitude]);
+                    if (routeLayer) routeLayer.setLatLngs(latLngs);
+                    else routeLayer = L.polyline(latLngs, { color: "#20c66b", weight: 5, opacity: 0.85 }).addTo(map);
+                    previousDirectionsAt = Date.now();
+                  }
+                }
+              }
+              setText("hint", `Rider location updated ${new Date(data.riderLocation.updatedAt).toLocaleTimeString()}.`);
+              document.getElementById("error").textContent = "";
+            } else if (data.order.status === "delivered" || data.order.status === "cancelled") {
+              if (riderMarker) map.removeLayer(riderMarker);
+              if (routeLayer) map.removeLayer(routeLayer);
+              setText("hint", "Live location sharing has ended.");
+            } else {
+              setText("hint", "The live map appears when your rider starts sharing their location.");
+            }
+          } catch (error) {
+            document.getElementById("error").textContent = error.message;
+          }
+        }
+
+        document.getElementById("view-map").addEventListener("click", () => {
+          const sheet = document.getElementById("sheet");
+          const collapsed = sheet.classList.toggle("collapsed");
+          document.getElementById("view-map").textContent =
+            collapsed ? "Order details" : "View live map";
+          setTimeout(() => map.invalidateSize(), 300);
+        });
+        refresh();
+        setInterval(refresh, 5000);
+      })();
+    </script>
+  </body>
+</html>
