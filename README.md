@@ -46,9 +46,17 @@ their link on a phone, allow location access, and keep the page open while
 delivering. Browser GPS requires the deployed site to use HTTPS.
 
 Before enabling tracking on an existing Supabase database, apply
-`migrations/002_delivery_tracking.sql` in the Supabase SQL editor. The table
-stores only hashed access tokens and the latest rider location; row-level
-security is enabled, and the server accesses it using the service-role key.
+`migrations/002_delivery_tracking.sql` and
+`migrations/003_delivery_confirmation_code.sql` in the Supabase SQL editor.
+The tracking table stores only hashed access tokens and the latest rider
+location; row-level security is enabled, and the server accesses it using the
+service-role key.
+
+After Paystack confirms payment, the customer receives a six-digit delivery
+confirmation code by WhatsApp. The rider must enter that code on their rider
+tracking page after handing over the order before it can be marked delivered.
+Only a hash of the code is stored, and five incorrect entries lock code checks
+for that order.
 
 Set `GEOAPIFY_API_KEY` in the server environment to enable address geocoding
 and road directions. Keep this key server-side; it is not sent to the browser.

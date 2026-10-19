@@ -40,6 +40,20 @@
         <p id="error" class="error" role="status"></p>
         <button id="start" type="button">Start sharing location</button>
         <button id="stop" class="secondary" type="button" hidden>Stop sharing location</button>
+        <form id="delivery-confirmation" hidden>
+          <p>Ask the customer for their delivery code after handing over the order.</p>
+          <label for="delivery-code">Customer's 6-digit code</label>
+          <input
+            id="delivery-code"
+            type="text"
+            inputmode="numeric"
+            autocomplete="one-time-code"
+            pattern="[0-9]{6}"
+            maxlength="6"
+            required
+          >
+          <button id="confirm-delivery" type="submit">Confirm delivery</button>
+        </form>
       </section>
     </main>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
@@ -91,6 +105,8 @@
           })[data.order.status] || "Delivery is not active";
           document.getElementById("destination").textContent =
             `Deliver to: ${data.order.deliveryAddress || "Address unavailable"}`;
+          document.getElementById("delivery-confirmation").hidden =
+            data.role !== "rider" || data.order.status !== "picked_up";
           if (data.order.status === "delivered" || data.order.status === "cancelled") {
             stopSharing();
             document.getElementById("start").hidden = true;
@@ -151,6 +167,29 @@
             document.getElementById("error").textContent = error.message;
           }
         }
+
+        document.getElementById("delivery-confirmation").addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const form = event.currentTarget;
+          const input = document.getElementById("delivery-code");
+          const button = document.getElementById("confirm-delivery");
+          const error = document.getElementById("error");
+          error.textContent = "";
+          button.disabled = true;
+          try {
+            await api("/api/rider/confirm-delivery", {
+              method: "POST",
+              body: JSON.stringify({ code: input.value }),
+            });
+            input.value = "";
+            await refresh();
+            document.getElementById("message").textContent = "Delivery confirmed. Thank you.";
+          } catch (submitError) {
+            error.textContent = submitError.message;
+          } finally {
+            button.disabled = false;
+          }
+        });
 
         function stopSharing() {
           if (watchId != null) navigator.geolocation.clearWatch(watchId);

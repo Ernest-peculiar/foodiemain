@@ -260,7 +260,14 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, "public")));
 
 const setupTrackingRoutes = require("./lib/routes-tracking");
-setupTrackingRoutes(app, { supabase, GEOAPIFY_API_KEY });
+setupTrackingRoutes(app, {
+  supabase,
+  GEOAPIFY_API_KEY,
+  markOrderDelivered: dispatch.markOrderDelivered,
+  sendWhatsAppMessage,
+  getCustomerConfirmDeliveryButtonsReply,
+  ORDER_NOTIFY_NUMBER,
+});
 
 // ============================================
 // HELPER FUNCTIONS

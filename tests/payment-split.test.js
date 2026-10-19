@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const createPaymentHandlers = require("../lib/payment");
+const { hashDeliveryCode } = require("../lib/tracking");
 
 function createHandlers(secretKey = "sk_live_fake") {
   return createPaymentHandlers({
@@ -90,4 +91,78 @@ test("Paystack test mode creates a payment link without live subaccount splits",
   } finally {
     global.fetch = originalFetch;
   }
+});
+
+test("payment success sends a delivery code and stores only its hash", async () => {
+  const sentMessages = [];
+  const order = {
+    id: "order-1",
+    customer_phone: "2348098765432",
+    customer_name: "Customer",
+    restaurant_name: "Foodie Kitchen",
+    items: [{ title: "Jollof Rice", qty: 1, price: 2500 }],
+    total: 3140,
+    payment_processing_fee: 140,
+    delivery_address: "1 Foodie Street",
+    payment_status: "unpaid",
+    vendor_id: null,
+  };
+  let paymentUpdate;
+  const supabase = {
+    from(table) {
+      assert.equal(table, "orders");
+      let mode = "select";
+      return {
+        select() {
+          mode = "select";
+          return this;
+        },
+        update(values) {
+          mode = "update";
+          paymentUpdate = values;
+          return this;
+        },
+        eq() {
+          return mode === "update"
+            ? Promise.resolve({ error: null })
+            : this;
+        },
+        async maybeSingle() {
+          return { data: order, error: null };
+        },
+      };
+    },
+  };
+  const handlers = createPaymentHandlers({
+    DELIVERY_FEE: 500,
+    PAYSTACK_SECRET_KEY: "sk_live_fake",
+    PUBLIC_URL: "https://example.com",
+    sendWhatsAppMessage: async (...args) => sentMessages.push(args),
+    saveProfile: async () => {},
+  });
+  const originalLog = console.log;
+  console.log = () => {};
+
+  try {
+    await handlers.handlePaystackChargeSuccess(
+      { reference: "order-1" },
+      supabase,
+      null,
+      () => ({ type: "interactive" }),
+    );
+  } finally {
+    console.log = originalLog;
+  }
+
+  const codeMessage = sentMessages.find(
+    ([phone, message]) =>
+      phone === order.customer_phone &&
+      message.body?.includes("delivery confirmation code"),
+  );
+  const code = codeMessage?.[1].body.match(/\*(\d{6})\*/)?.[1];
+  assert.ok(codeMessage);
+  assert.match(code, /^\d{6}$/);
+  assert.equal(paymentUpdate.delivery_code_hash, hashDeliveryCode(code));
+  assert.equal(paymentUpdate.delivery_code_attempts, 0);
+  assert.equal(paymentUpdate.delivery_code_hash.includes(code), false);
 });

@@ -73,6 +73,8 @@ create table if not exists orders (
   driver_assigned_at timestamptz,
   picked_up_at timestamptz,
   delivered_at timestamptz,
+  delivery_code_hash text,
+  delivery_code_attempts integer not null default 0,
   estimated_prep_time_minutes integer,
   delivery_photo_url text,
   customer_confirmed_at timestamptz,
