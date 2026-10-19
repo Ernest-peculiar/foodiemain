@@ -93,6 +93,35 @@ test("Paystack test mode creates a payment link without live subaccount splits",
   }
 });
 
+test("text and image receipts include every order item and the correct subtotal", () => {
+  const handlers = createHandlers();
+  const receiptData = {
+    orderId: "order-1",
+    vendorName: "Foodie Kitchen",
+    items: [
+      { title: "Jollof Rice", qty: 2, price: 2500 },
+      { title: "Fried Plantain", qty: 1, price: 800 },
+    ],
+    subtotal: 5800,
+    total: 6440,
+    processingFee: 140,
+    address: "1 Foodie Street",
+    reference: "pay-1",
+    paidAt: "2026-10-19T12:00:00.000Z",
+  };
+
+  const textReceipt = handlers.buildReceiptText(receiptData);
+  const imageReceipt = handlers.buildReceiptSVG(receiptData);
+
+  assert.match(textReceipt, /2 x Jollof Rice/);
+  assert.match(textReceipt, /1 x Fried Plantain/);
+  assert.match(textReceipt, /Items subtotal: ₦5,800/);
+  assert.match(imageReceipt, /ITEM 1: JOLLOF RICE/);
+  assert.match(imageReceipt, /ITEM 2: FRIED PLANTAIN/);
+  assert.match(imageReceipt, /Items subtotal/i);
+  assert.match(imageReceipt, /₦5,800/);
+});
+
 test("payment success sends a delivery code and stores only its hash", async () => {
   const sentMessages = [];
   const order = {
@@ -100,8 +129,12 @@ test("payment success sends a delivery code and stores only its hash", async () 
     customer_phone: "2348098765432",
     customer_name: "Customer",
     restaurant_name: "Foodie Kitchen",
-    items: [{ title: "Jollof Rice", qty: 1, price: 2500 }],
-    total: 3140,
+    items: [
+      { title: "Jollof Rice", qty: 1, price: 2500 },
+      { title: "Fried Plantain", qty: 1, price: 800 },
+    ],
+    subtotal: 3300,
+    total: 3940,
     payment_processing_fee: 140,
     delivery_address: "1 Foodie Street",
     payment_status: "unpaid",
@@ -165,4 +198,13 @@ test("payment success sends a delivery code and stores only its hash", async () 
   assert.equal(paymentUpdate.delivery_code_hash, hashDeliveryCode(code));
   assert.equal(paymentUpdate.delivery_code_attempts, 0);
   assert.equal(paymentUpdate.delivery_code_hash.includes(code), false);
+  const customerReceipt = sentMessages.find(
+    ([phone, message]) =>
+      phone === order.customer_phone &&
+      message.type === "text" &&
+      message.body?.includes("*Receipt*"),
+  );
+  assert.match(customerReceipt[1].body, /Jollof Rice/);
+  assert.match(customerReceipt[1].body, /Fried Plantain/);
+  assert.match(customerReceipt[1].body, /Items subtotal: ₦3,300/);
 });
