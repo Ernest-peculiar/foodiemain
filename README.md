@@ -55,10 +55,10 @@ location; row-level security is enabled, and the server accesses it using the
 service-role key.
 
 After Paystack confirms payment, the customer receives a six-digit delivery
-confirmation code by WhatsApp. The rider must enter that code on their rider
-tracking page after handing over the order before it can be marked delivered.
-Only a hash of the code is stored, and five incorrect entries lock code checks
-for that order.
+confirmation code by WhatsApp. After tapping **Delivered** in WhatsApp, the
+rider can enter that code in the same chat to complete the order. The rider
+tracking page also supports code entry. Only a hash of the code is stored, and
+five incorrect entries lock code checks for that order.
 
 Set `GEOAPIFY_API_KEY` in the server environment to enable address geocoding
 and road directions. Keep this key server-side; it is not sent to the browser.

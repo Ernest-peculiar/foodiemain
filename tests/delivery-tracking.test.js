@@ -5,6 +5,7 @@ const {
   hashDeliveryCode,
   createDeliveryTrackingTokens,
 } = require("../lib/tracking");
+const { STAGES } = require("../lib/constants");
 const setupTrackingRoutes = require("../lib/routes-tracking");
 const createDispatchHandlers = require("../lib/handlers-dispatch");
 
@@ -288,6 +289,7 @@ test("tracking API rejects requests without bearer tokens", async () => {
 test("driver assignment sends separate rider and customer tracking links", async () => {
   const sentMessages = [];
   const handlers = createDispatchHandlers({
+    STAGES,
     dispatch: {
       assignDriverToOrder: async () => ({ ok: true }),
     },
@@ -350,4 +352,101 @@ test("driver assignment sends separate rider and customer tracking links", async
     customerLink[1].body.match(/[a-f0-9]{64}/)[0],
     riderLink[1].body.match(/[a-f0-9]{64}/)[0],
   );
+});
+
+test("WhatsApp Delivered button prompts for and verifies the delivery code", async () => {
+  const order = {
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    status: "picked_up",
+    driver_id: "driver-1",
+    delivery_code_hash: hashDeliveryCode("123456"),
+    delivery_code_attempts: 0,
+    customer_phone: "2348098765432",
+  };
+  const sentMessages = [];
+  const handlers = createDispatchHandlers({
+    STAGES,
+    dispatch: {
+      markOrderDelivered: async (_supabase, orderId, driverId) => {
+        assert.equal(orderId, order.id);
+        assert.equal(driverId, order.driver_id);
+        order.status = "delivered";
+        return { ...order };
+      },
+    },
+    getDriverRecordByPhone: async () => ({ id: "driver-1" }),
+    sendWhatsAppMessage: async (...message) => sentMessages.push(message),
+    getCustomerConfirmDeliveryButtonsReply: (orderId) => ({ orderId }),
+    ORDER_NOTIFY_NUMBER: "2348000000000",
+  });
+  const supabase = {
+    from(table) {
+      assert.equal(table, "orders");
+      let updateValues;
+      return {
+        select() {
+          return this;
+        },
+        update(values) {
+          updateValues = values;
+          return this;
+        },
+        eq() {
+          return this;
+        },
+        async maybeSingle() {
+          if (updateValues) {
+            Object.assign(order, updateValues);
+            return {
+              data: { delivery_code_attempts: order.delivery_code_attempts },
+              error: null,
+            };
+          }
+          return { data: { ...order }, error: null };
+        },
+      };
+    },
+  };
+
+  const prompt = await handlers.handleDispatchPayload(
+    `driver_deliver_${order.id}`,
+    "2348012345678",
+    {},
+    supabase,
+  );
+  assert.equal(prompt.nextStage, STAGES.DRIVER_AWAIT_DELIVERY_CODE);
+  assert.deepEqual(prompt.sessionData, { pendingDeliveryOrderId: order.id });
+  assert.match(prompt.replies.body, /enter the customer's 6-digit delivery code here/i);
+
+  const result = await handlers.handleDispatchPayload(
+    "123456",
+    "2348012345678",
+    { ...prompt.sessionData, stage: prompt.nextStage },
+    supabase,
+  );
+  assert.equal(result.nextStage, null);
+  assert.equal(order.status, "delivered");
+  assert.match(result.replies.body, /code accepted/i);
+  assert.equal(sentMessages[0][0], "2348000000000");
+  assert.equal(sentMessages[1][0], "2348098765432");
+  assert.deepEqual(sentMessages[2][1], { orderId: order.id });
+});
+
+test("WhatsApp delivery code entry stays active for invalid codes", async () => {
+  const handlers = createDispatchHandlers({
+    STAGES,
+    getDriverRecordByPhone: async () => ({ id: "driver-1" }),
+  });
+  const result = await handlers.handleDispatchPayload(
+    "123",
+    "2348012345678",
+    {
+      stage: STAGES.DRIVER_AWAIT_DELIVERY_CODE,
+      pendingDeliveryOrderId: "order-1",
+    },
+    {},
+  );
+
+  assert.equal(result.nextStage, STAGES.DRIVER_AWAIT_DELIVERY_CODE);
+  assert.match(result.replies.body, /6-digit delivery code/i);
 });
