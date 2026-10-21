@@ -68,6 +68,7 @@ create table if not exists orders (
   payment_status text not null default 'unpaid' check (payment_status in ('unpaid','paid','failed')),
   paystack_reference text unique,
   paid_at timestamptz,
+  vendor_notified_at timestamptz,
   created_at timestamptz not null default now(),
   vendor_accepted_at timestamptz,
   driver_assigned_at timestamptz,
@@ -102,6 +103,7 @@ create table if not exists delivery_tracking (
 --   alter table orders add column if not exists payment_processing_fee numeric(10,2) not null default 0;
 --   alter table orders add column if not exists paystack_reference text unique;
 --   alter table orders add column if not exists paid_at timestamptz;
+--   alter table orders add column if not exists vendor_notified_at timestamptz;
 --   alter table orders add column if not exists customer_confirmed_at timestamptz;
 --   alter table orders drop constraint if exists orders_status_check;
 --   alter table orders add constraint orders_status_check check (status in ('pending_payment','pending_vendor','vendor_rejected','awaiting_driver','driver_assigned','picked_up','delivered','cancelled'));

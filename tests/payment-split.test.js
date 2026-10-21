@@ -208,3 +208,106 @@ test("payment success sends a delivery code and stores only its hash", async () 
   assert.match(customerReceipt[1].body, /Fried Plantain/);
   assert.match(customerReceipt[1].body, /Items subtotal: ₦3,300/);
 });
+
+test("paid orders retry vendor notification until WhatsApp confirms delivery", async () => {
+  const vendor = { phone: "2348012345678" };
+  const order = {
+    id: "order-2",
+    customer_phone: "2348098765432",
+    restaurant_name: "Foodie Kitchen",
+    items: [{ title: "Jollof Rice", qty: 1, price: 2500 }],
+    subtotal: 2500,
+    total: 3140,
+    payment_processing_fee: 140,
+    delivery_address: "1 Foodie Street",
+    payment_status: "paid",
+    paid_at: "2026-10-19T12:00:00.000Z",
+    vendor_id: "vendor-1",
+    vendor_notified_at: null,
+  };
+  const sentMessages = [];
+  const orderUpdates = [];
+  let sendAttempt = 0;
+  const supabase = {
+    from(table) {
+      assert.equal(table, "orders");
+      let mode = "select";
+      let updateValues;
+      return {
+        select() {
+          mode = "select";
+          return this;
+        },
+        update(values) {
+          mode = "update";
+          updateValues = values;
+          orderUpdates.push(values);
+          return this;
+        },
+        eq() {
+          if (mode === "update") {
+            Object.assign(order, updateValues);
+            return Promise.resolve({ error: null });
+          }
+          return this;
+        },
+        async maybeSingle() {
+          return { data: order, error: null };
+        },
+      };
+    },
+  };
+  const handlers = createPaymentHandlers({
+    DELIVERY_FEE: 500,
+    PAYSTACK_SECRET_KEY: "sk_live_fake",
+    PUBLIC_URL: "https://example.com",
+    getVendorRecordById: async () => vendor,
+    sendWhatsAppMessage: async (...args) => {
+      sentMessages.push(args);
+      sendAttempt += 1;
+      return sendAttempt === 1 ? null : `wamid-${sendAttempt}`;
+    },
+    saveProfile: async () => {},
+  });
+  const originalLog = console.log;
+  const originalWarn = console.warn;
+  console.log = () => {};
+  console.warn = () => {};
+
+  try {
+    await assert.rejects(
+      handlers.handlePaystackChargeSuccess(
+        { reference: "order-2" },
+        supabase,
+        null,
+        () => ({ type: "interactive" }),
+      ),
+      /WhatsApp did not confirm the order receipt/,
+    );
+    assert.equal(order.vendor_notified_at, null);
+
+    await handlers.handlePaystackChargeSuccess(
+      { reference: "order-2" },
+      supabase,
+      null,
+      () => ({ type: "interactive" }),
+    );
+    await handlers.handlePaystackChargeSuccess(
+      { reference: "order-2" },
+      supabase,
+      null,
+      () => ({ type: "interactive" }),
+    );
+  } finally {
+    console.log = originalLog;
+    console.warn = originalWarn;
+  }
+
+  assert.equal(sentMessages.length, 3);
+  assert.ok(sentMessages.every(([phone]) => phone === vendor.phone));
+  assert.match(sentMessages[0][1].body, /Jollof Rice/);
+  assert.equal(sentMessages[2][1].type, "interactive");
+  assert.ok(order.vendor_notified_at);
+  assert.equal(orderUpdates.length, 1);
+  assert.ok(orderUpdates[0].vendor_notified_at);
+});

@@ -48,6 +48,8 @@ delivering. Browser GPS requires the deployed site to use HTTPS.
 Before enabling tracking on an existing Supabase database, apply
 `migrations/002_delivery_tracking.sql` and
 `migrations/003_delivery_confirmation_code.sql` in the Supabase SQL editor.
+Apply `migrations/004_vendor_order_notifications.sql` as well so failed vendor
+WhatsApp notifications can be retried safely when Paystack resends its webhook.
 The tracking table stores only hashed access tokens and the latest rider
 location; row-level security is enabled, and the server accesses it using the
 service-role key.
