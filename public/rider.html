@@ -26,6 +26,13 @@
       #status { color: var(--green); font-weight: 700; }
       #message { color: #c5d0d1; line-height: 1.5; }
       .error { color: #ffb6a9 !important; }
+      dialog { width: min(440px, calc(100% - 32px)); border: 1px solid #344143; border-radius: 22px; padding: 24px; background: #1b2527; color: #f5f7f7; box-shadow: 0 20px 60px #0009; }
+      dialog::backdrop { background: #0009; backdrop-filter: blur(3px); }
+      dialog h2 { margin: 0 0 8px; }
+      dialog p { color: #c5d0d1; line-height: 1.5; }
+      dialog label { display: block; margin: 18px 0 8px; font-weight: 700; }
+      dialog input { width: 100%; border: 1px solid #475254; border-radius: 12px; padding: 15px; background: #101719; color: #f5f7f7; font-size: 22px; letter-spacing: .3em; text-align: center; }
+      dialog button { margin-bottom: 0; }
       a { color: var(--green); }
     </style>
   </head>
@@ -40,22 +47,28 @@
         <p id="error" class="error" role="status"></p>
         <button id="start" type="button">Start sharing location</button>
         <button id="stop" class="secondary" type="button" hidden>Stop sharing location</button>
-        <form id="delivery-confirmation" hidden>
-          <p>Ask the customer for their delivery code after handing over the order.</p>
-          <label for="delivery-code">Customer's 6-digit code</label>
-          <input
-            id="delivery-code"
-            type="text"
-            inputmode="numeric"
-            autocomplete="one-time-code"
-            pattern="[0-9]{6}"
-            maxlength="6"
-            required
-          >
-          <button id="confirm-delivery" type="submit">Confirm delivery</button>
-        </form>
+        <button id="mark-delivered" type="button" hidden>Delivered</button>
       </section>
     </main>
+    <dialog id="delivery-dialog" aria-labelledby="delivery-dialog-title">
+      <form id="delivery-confirmation">
+        <h2 id="delivery-dialog-title">Confirm delivery</h2>
+        <p>After handing over the order, ask the customer for their 6-digit delivery code.</p>
+        <label for="delivery-code">Customer's delivery code</label>
+        <input
+          id="delivery-code"
+          type="text"
+          inputmode="numeric"
+          autocomplete="one-time-code"
+          pattern="[0-9]{6}"
+          maxlength="6"
+          required
+        >
+        <p id="delivery-error" class="error" role="status"></p>
+        <button id="confirm-delivery" type="submit">Confirm delivery</button>
+        <button id="cancel-delivery" class="secondary" type="button">Cancel</button>
+      </form>
+    </dialog>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
     <script>
       (() => {
@@ -105,12 +118,14 @@
           })[data.order.status] || "Delivery is not active";
           document.getElementById("destination").textContent =
             `Deliver to: ${data.order.deliveryAddress || "Address unavailable"}`;
-          document.getElementById("delivery-confirmation").hidden =
+          document.getElementById("mark-delivered").hidden =
             data.role !== "rider" || data.order.status !== "picked_up";
           if (data.order.status === "delivered" || data.order.status === "cancelled") {
+            document.getElementById("delivery-dialog").close();
             stopSharing();
             document.getElementById("start").hidden = true;
             document.getElementById("stop").hidden = true;
+            document.getElementById("mark-delivered").hidden = true;
             document.getElementById("message").textContent = "Location sharing has ended for this delivery.";
             if (riderMarker) map.removeLayer(riderMarker);
             if (routeLayer) map.removeLayer(routeLayer);
@@ -168,20 +183,30 @@
           }
         }
 
+        const deliveryDialog = document.getElementById("delivery-dialog");
+        const deliveryInput = document.getElementById("delivery-code");
+        document.getElementById("mark-delivered").addEventListener("click", () => {
+          document.getElementById("delivery-error").textContent = "";
+          deliveryInput.value = "";
+          deliveryDialog.showModal();
+          deliveryInput.focus();
+        });
+        document.getElementById("cancel-delivery").addEventListener("click", () => {
+          deliveryDialog.close();
+        });
         document.getElementById("delivery-confirmation").addEventListener("submit", async (event) => {
           event.preventDefault();
-          const form = event.currentTarget;
-          const input = document.getElementById("delivery-code");
           const button = document.getElementById("confirm-delivery");
-          const error = document.getElementById("error");
+          const error = document.getElementById("delivery-error");
           error.textContent = "";
           button.disabled = true;
           try {
             await api("/api/rider/confirm-delivery", {
               method: "POST",
-              body: JSON.stringify({ code: input.value }),
+              body: JSON.stringify({ code: deliveryInput.value }),
             });
-            input.value = "";
+            deliveryDialog.close();
+            deliveryInput.value = "";
             await refresh();
             document.getElementById("message").textContent = "Delivery confirmed. Thank you.";
           } catch (submitError) {
