@@ -8,6 +8,7 @@ const {
 const { STAGES } = require("../lib/constants");
 const setupTrackingRoutes = require("../lib/routes-tracking");
 const createDispatchHandlers = require("../lib/handlers-dispatch");
+const createUIHelpers = require("../lib/helpers-ui");
 
 test("delivery tracking creates unique links and stores only token hashes", async () => {
   let savedRow;
@@ -352,6 +353,116 @@ test("driver assignment sends separate rider and customer tracking links", async
     customerLink[1].body.match(/[a-f0-9]{64}/)[0],
     riderLink[1].body.match(/[a-f0-9]{64}/)[0],
   );
+});
+
+test("vendor acceptance sends one interactive delivery offer to each available driver", async () => {
+  const sentMessages = [];
+  const orderId = "550e8400-e29b-41d4-a716-446655440000";
+  const { getDriverAcceptButtonsReply } = createUIHelpers({
+    MOOD_CATALOG: {},
+    PUBLIC_URL: "https://foodie.example",
+  });
+  const handlers = createDispatchHandlers({
+    STAGES,
+    normalizePhone: (phone) => phone,
+    dispatch: {
+      vendorAcceptOrder: async () => ({
+        id: orderId,
+        customer_phone: "2348098765432",
+        restaurant_name: "Foodie Kitchen",
+      }),
+      findAvailableDrivers: async () => [
+        {
+          id: "driver-1",
+          phone: "2348012345678",
+        },
+      ],
+    },
+    getVendorRecordByPhone: async () => ({
+      id: "vendor-1",
+      name: "Foodie Kitchen",
+      phone: "2348023456789",
+      vicinity: "Main Street",
+    }),
+    getDriverAcceptButtonsReply,
+    sendWhatsAppMessage: async (...message) => {
+      sentMessages.push(message);
+      return `wamid-${sentMessages.length}`;
+    },
+  });
+
+  await handlers.handleDispatchPayload(
+    `vendor_accept_${orderId}_10`,
+    "2348023456789",
+    {},
+    {},
+  );
+
+  const offer = sentMessages.find(([phone]) => phone === "2348012345678");
+  assert.equal(sentMessages.filter(([phone]) => phone === "2348012345678").length, 1);
+  assert.equal(offer[1].type, "interactive");
+  assert.match(offer[1].interactive.body.text, /Pick up from: \*Foodie Kitchen\*/);
+  assert.match(offer[1].interactive.body.text, /Main Street/);
+  assert.equal(
+    offer[1].interactive.action.buttons[0].reply.id,
+    `driver_reject_${orderId}`,
+  );
+  assert.equal(
+    offer[1].interactive.action.buttons[1].reply.id,
+    `driver_accept_${orderId}`,
+  );
+  assert.match(
+    sentMessages.at(-1)[1].body,
+    /sent the delivery request to 1 available driver/i,
+  );
+});
+
+test("vendor acceptance reports when WhatsApp fails to deliver driver offers", async () => {
+  const sentMessages = [];
+  const originalConsoleError = console.error;
+  console.error = () => {};
+  const handlers = createDispatchHandlers({
+    STAGES,
+    normalizePhone: (phone) => phone,
+    dispatch: {
+      vendorAcceptOrder: async () => ({
+        id: "550e8400-e29b-41d4-a716-446655440000",
+        customer_phone: "2348098765432",
+        restaurant_name: "Foodie Kitchen",
+      }),
+      findAvailableDrivers: async () => [
+        { id: "driver-1", phone: "2348012345678" },
+      ],
+    },
+    getVendorRecordByPhone: async () => ({ id: "vendor-1", name: "Foodie Kitchen" }),
+    getDriverAcceptButtonsReply: (id, body) => ({ id, body }),
+    sendWhatsAppMessage: async (...message) => {
+      sentMessages.push(message);
+      return message[0] === "2348012345678" ? null : `wamid-${sentMessages.length}`;
+    },
+    ORDER_NOTIFY_NUMBER: "2348000000000",
+  });
+
+  try {
+    await handlers.handleDispatchPayload(
+      "vendor_accept_550e8400-e29b-41d4-a716-446655440000_10",
+      "2348023456789",
+      {},
+      {},
+    );
+  } finally {
+    console.error = originalConsoleError;
+  }
+
+  const adminAlert = sentMessages.find(([phone]) => phone === "2348000000000");
+  const customerNotice = sentMessages.find(
+    ([phone, message]) =>
+      phone === "2348098765432" &&
+      /could not deliver the driver request/i.test(message.body || ""),
+  );
+  assert.ok(adminAlert);
+  assert.match(adminAlert[1].body, /could not deliver any driver offers/i);
+  assert.ok(customerNotice);
 });
 
 test("WhatsApp Delivered button prompts for and verifies the delivery code", async () => {
