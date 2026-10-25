@@ -595,3 +595,61 @@ test("WhatsApp delivery code entry stays active for invalid codes", async () => 
   assert.equal(result.nextStage, STAGES.DRIVER_AWAIT_DELIVERY_CODE);
   assert.match(result.replies.body, /6-digit delivery code/i);
 });
+
+test("wrong WhatsApp delivery code tells the driver to try again", async () => {
+  const order = {
+    id: "order-1",
+    status: "picked_up",
+    driver_id: "driver-1",
+    delivery_code_hash: hashDeliveryCode("123456"),
+    delivery_code_attempts: 0,
+    customer_phone: "2348098765432",
+  };
+  const handlers = createDispatchHandlers({
+    STAGES,
+    getDriverRecordByPhone: async () => ({ id: "driver-1" }),
+    sendWhatsAppMessage: async () => "wamid-test",
+  });
+  const supabase = {
+    from(table) {
+      assert.equal(table, "orders");
+      let updateValues;
+      return {
+        select() {
+          return this;
+        },
+        update(values) {
+          updateValues = values;
+          return this;
+        },
+        eq() {
+          return this;
+        },
+        async maybeSingle() {
+          if (updateValues) {
+            Object.assign(order, updateValues);
+            return {
+              data: { delivery_code_attempts: order.delivery_code_attempts },
+              error: null,
+            };
+          }
+          return { data: { ...order }, error: null };
+        },
+      };
+    },
+  };
+
+  const result = await handlers.handleDispatchPayload(
+    "654321",
+    "2348012345678",
+    {
+      stage: STAGES.DRIVER_AWAIT_DELIVERY_CODE,
+      pendingDeliveryOrderId: order.id,
+    },
+    supabase,
+  );
+
+  assert.match(result.replies.body, /wrong code\. please try again/i);
+  assert.equal(result.nextStage, STAGES.DRIVER_AWAIT_DELIVERY_CODE);
+  assert.equal(order.delivery_code_attempts, 1);
+});
