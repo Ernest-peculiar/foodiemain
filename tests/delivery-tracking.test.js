@@ -417,6 +417,51 @@ test("vendor acceptance sends one interactive delivery offer to each available d
   );
 });
 
+test("driver coming online receives orders already waiting for a driver", async () => {
+  const sentMessages = [];
+  const { getDriverAcceptButtonsReply } = createUIHelpers({
+    MOOD_CATALOG: {},
+    PUBLIC_URL: "https://foodie.example",
+  });
+  const handlers = createDispatchHandlers({
+    STAGES,
+    normalizePhone: (phone) => phone,
+    dispatch: {
+      setDriverAvailability: async () => ({
+        id: "driver-1",
+        phone: "2348012345678",
+      }),
+      findAwaitingDriverOrders: async () => [
+        {
+          id: "550e8400-e29b-41d4-a716-446655440000",
+          restaurant_name: "Foodie Kitchen",
+        },
+      ],
+    },
+    getDriverAcceptButtonsReply,
+    sendWhatsAppMessage: async (...message) => {
+      sentMessages.push(message);
+      return `wamid-${sentMessages.length}`;
+    },
+  });
+
+  const result = await handlers.handleAvailabilityCommands(
+    "online",
+    "2348012345678",
+    {},
+    {},
+  );
+
+  assert.match(result.replies.body, /sent you 1 pending delivery request/i);
+  assert.equal(sentMessages.length, 1);
+  assert.equal(sentMessages[0][0], "2348012345678");
+  assert.equal(sentMessages[0][1].type, "interactive");
+  assert.equal(
+    sentMessages[0][1].interactive.action.buttons[1].reply.id,
+    "driver_accept_550e8400-e29b-41d4-a716-446655440000",
+  );
+});
+
 test("vendor acceptance reports when WhatsApp fails to deliver driver offers", async () => {
   const sentMessages = [];
   const originalConsoleError = console.error;
