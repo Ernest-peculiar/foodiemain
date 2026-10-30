@@ -4,7 +4,7 @@ const crypto = require("node:crypto");
 const path = require("node:path");
 const setupAdminRoutes = require("../lib/routes-admin");
 
-function createAdminHarness() {
+function createAdminHarness(overrides = {}) {
   const routes = new Map();
   const app = {
     use() {},
@@ -33,6 +33,7 @@ function createAdminHarness() {
     parseVendorMenu: () => [],
     sendWhatsAppMessage: async () => {},
     buildVendorWelcomeMessage: () => "",
+    ...overrides,
   });
 
   return routes;
@@ -62,13 +63,13 @@ function createResponse() {
   };
 }
 
-async function callRoute(handlers, username, password) {
+async function callRoute(handlers, username, password, body = {}) {
   const req = {
     headers: {
       authorization:
         "Basic " + Buffer.from(`${username}:${password}`).toString("base64"),
     },
-    body: {},
+    body,
     query: {},
   };
   const res = createResponse();
@@ -154,4 +155,91 @@ test("invalid credentials do not receive a dashboard role", async () => {
 
   assert.equal(res.statusCode, 401);
   assert.equal(res.payload, "Invalid credentials.");
+});
+
+test("vendor setup recreates a missing subaccount with the active Paystack key", async () => {
+  const savedVendors = [];
+  const supabase = {
+    from(table) {
+      assert.equal(table, "vendors");
+      return {
+        select() {
+          return this;
+        },
+        eq() {
+          return this;
+        },
+        async maybeSingle() {
+          return {
+            data: {
+              id: "vendor-1",
+              paystack_subaccount_code: "ACCT_test_mode",
+            },
+            error: null,
+          };
+        },
+      };
+    },
+  };
+  const routes = createAdminHarness({
+    supabase,
+    PAYSTACK_SECRET_KEY: "sk_live_fake",
+    dispatch: {
+      upsertVendor: async (_supabase, vendor) => {
+        savedVendors.push(vendor);
+        return { id: "vendor-1" };
+      },
+    },
+  });
+  const originalFetch = global.fetch;
+  const requests = [];
+  global.fetch = async (url, options) => {
+    requests.push({ url, options });
+    if (options.method === "PUT") {
+      return {
+        ok: false,
+        status: 400,
+        json: async () => ({ status: false, message: "Subaccount does not exist" }),
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        status: true,
+        data: { subaccount_code: "ACCT_live_mode" },
+      }),
+    };
+  };
+
+  try {
+    const { res } = await callRoute(
+      routes.get("POST /admin/api/vendors"),
+      "owner",
+      "owner-secret",
+      {
+        contactName: "Owner",
+        restaurantName: "Foodie Kitchen",
+        whatsappNumber: "2348012345678",
+        address: "1 Foodie Street",
+        openingHours: "9am to 9pm",
+        bankCode: "001",
+        bankName: "Test Bank",
+        accountNumber: "0123456789",
+        accountName: "Foodie Kitchen",
+      },
+    );
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0].options.method, "PUT");
+    assert.equal(requests[1].options.method, "POST");
+    assert.equal(
+      JSON.parse(requests[1].options.body).settlement_bank,
+      "001",
+    );
+    assert.equal(savedVendors[0].paystackSubaccountCode, "ACCT_live_mode");
+  } finally {
+    global.fetch = originalFetch;
+  }
 });
