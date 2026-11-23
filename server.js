@@ -97,6 +97,7 @@ const {
   shouldProcessIncomingWebhookMessage,
   hasMenuContent,
   normalizeMenuItems,
+  filterVendorsByMeals,
 } = require("./lib/utils");
 
 const createDatabase = require("./lib/database");
@@ -481,7 +482,7 @@ async function askGrok(
 }
 
 // Build food recommendation text
-async function buildMoodReply(category, shortName, lastMeal) {
+async function buildMoodReply(category, shortName, lastMeal, recommendedItems) {
   const basePrefix = lastMeal
     ? `Based on what you last ate (${lastMeal}), `
     : "";
@@ -490,7 +491,8 @@ async function buildMoodReply(category, shortName, lastMeal) {
     return [all[Math.floor(Math.random() * all.length)]];
   };
   const items =
-    category === "surprise" ? getSurpriseItems() : MOOD_CATALOG[category];
+    recommendedItems ||
+    (category === "surprise" ? getSurpriseItems() : MOOD_CATALOG[category]);
 
   if (!items || items.length === 0) {
     return {
@@ -521,6 +523,7 @@ async function buildMoodReply(category, shortName, lastMeal) {
 // Browse registered restaurants
 async function handleBrowseRestaurants(
   introText = `Here are our registered restaurants 👇 Tap one to see the menu.`,
+  recommendedMeals,
 ) {
   const vendors = await getRegisteredVendors();
 
@@ -535,13 +538,25 @@ async function handleBrowseRestaurants(
     };
   }
 
+  const matchingVendors = filterVendorsByMeals(
+    vendors,
+    recommendedMeals,
+    parseVendorMenu,
+  );
+  const listedVendors = matchingVendors.length ? matchingVendors : vendors;
+  const listedIntroText = matchingVendors.length
+    ? introText
+    : recommendedMeals?.length
+      ? `I couldn't find those meals on current menus. Here are all available restaurants instead 👇`
+      : introText;
+
   return {
     replies: [
-      { type: "text", body: introText },
-      getRegisteredVendorListReply(vendors),
+      { type: "text", body: listedIntroText },
+      getRegisteredVendorListReply(listedVendors),
     ],
     nextStage: STAGES.ORDER_SELECT_RESTAURANT,
-    sessionData: { registeredVendors: vendors },
+    sessionData: { registeredVendors: listedVendors },
   };
 }
 

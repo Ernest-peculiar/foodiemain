@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const {
   shouldProcessWhatsAppMessage,
   hasMenuContent,
+  filterVendorsByMeals,
 } = require("../lib/utils");
 const createDatabase = require("../lib/database");
 const dispatch = require("../lib/order-dispatch");
@@ -168,6 +169,66 @@ test("createOrderRecord refuses checkout when the vendor is offline", async () =
     }),
     (error) => error.code === "VENDOR_UNAVAILABLE",
   );
+});
+
+test("meal matching includes available menu items and legacy text menus only", () => {
+  const vendors = [
+    {
+      name: "Rice House",
+      menu_items: [{ title: "Fried Rice and Chicken Stew", available: true }],
+    },
+    {
+      name: "Sold Out",
+      menu_items: [{ title: "Pounded Yam and Egusi", available: false }],
+    },
+    { name: "Moi Moi Spot", menu: "Moi Moi and Pap - 1200" },
+    { name: "Yam Spot", menu: "Yam and Egg - 1500" },
+  ];
+  const meals = [
+    { name: "Fried Rice & Chicken" },
+    { name: "Pounded Yam & Egusi" },
+    { name: "Moi Moi & Pap" },
+    { name: "Yam & Egg" },
+  ];
+  const parseMenu = createUIHelpers({
+    MOOD_CATALOG: {},
+    PUBLIC_URL: "https://example.com",
+  }).parseVendorMenu;
+
+  const matchingVendors = filterVendorsByMeals(vendors, meals, parseMenu);
+
+  assert.deepEqual(
+    matchingVendors.map((vendor) => vendor.name),
+    ["Rice House", "Moi Moi Spot", "Yam Spot"],
+  );
+});
+
+test("health-goal recommendations pass the exact meals to restaurant browsing", async () => {
+  const recommendedMeals = [{ name: "Beans & Plantain" }];
+  let browsedMeals;
+  let displayedMeals;
+  const stageHandlers = createStageHandlers({
+    MOOD_CATALOG: { affordable: recommendedMeals },
+    mapMoodToCategory: () => "affordable",
+    buildMoodReply: async (category, shortName, lastMeal, meals) => {
+      displayedMeals = meals;
+      return [];
+    },
+    handleBrowseRestaurants: async (intro, meals) => {
+      browsedMeals = meals;
+      return { replies: { type: "text", body: intro }, nextStage: null };
+    },
+  });
+
+  await stageHandlers.handleAskHealthGoals(
+    "I want to eat healthier",
+    "Jane",
+    { userMood: "affordable" },
+    "Jane",
+  );
+
+  assert.equal(displayedMeals, recommendedMeals);
+  assert.equal(browsedMeals, recommendedMeals);
 });
 
 test("parseVendorMenu handles pasted menu lines with extra text and section headers", () => {
