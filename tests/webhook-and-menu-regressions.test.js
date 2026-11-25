@@ -253,6 +253,24 @@ FANTA - 500`;
   assert.equal(items[3].price, 500);
 });
 
+test("parseVendorMenu preserves numbers in item names and accepts equals prices", () => {
+  const ui = createUIHelpers({
+    MOOD_CATALOG: {},
+    PUBLIC_URL: "https://example.com",
+  });
+  const items = ui.parseVendorMenu(
+    "Bread + 1 egg + salad = 1,900\nBread + 2 eggs, no salad - 2000",
+  );
+
+  assert.deepEqual(
+    items.map(({ title, price }) => ({ title, price })),
+    [
+      { title: "Bread + 1 egg + salad", price: 1900 },
+      { title: "Bread + 2 eggs, no salad", price: 2000 },
+    ],
+  );
+});
+
 test("menu list paginates long item sets into separate WhatsApp messages", () => {
   const ui = createUIHelpers({
     MOOD_CATALOG: {},
